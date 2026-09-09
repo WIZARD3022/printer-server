@@ -3,7 +3,7 @@ require("dotenv").config();
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-
+PORT = process.env.PORT
 /*
 |--------------------------------------------------------------------------
 | Configuration
@@ -616,5 +616,5 @@ pollServer();
 
 setInterval(
     pollServer,
-    5000
+    PORT
 );
