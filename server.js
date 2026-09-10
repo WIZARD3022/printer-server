@@ -1,32 +1,120 @@
+/*
+|--------------------------------------------------------------------------
+| server.js
+|--------------------------------------------------------------------------
+| UniKart Printer Client
+|--------------------------------------------------------------------------
+*/
+
 require("dotenv").config();
 
 const axios = require("axios");
+
 const fs = require("fs");
+
 const path = require("path");
-PORT = process.env.PORT
+
+const crypto = require("crypto");
+
+const express = require("express");
+
+const {
+    execFile
+} = require("child_process");
+
+const {
+    promisify
+} = require("util");
+
+const PDFDocument = require("pdfkit");
+
+
+const {
+    connectDatabase,
+    createPrintJob,
+    getPendingJobs,
+    getProcessingJob,
+    updateJobStatus,
+    setCupsJobId
+} = require("./database");
+
+
+const dashboard =
+    require("./dashboard");
+
+
+const execFileAsync =
+    promisify(execFile);
+
+
 /*
 |--------------------------------------------------------------------------
 | Configuration
 |--------------------------------------------------------------------------
 */
 
+const PORT =
+    Number(process.env.PORT) || 3000;
+
+
 const SERVER_URL =
     process.env.SERVER_URL;
+
 
 const FILE_API_KEY =
     process.env.FILE_API_KEY;
 
+
+const POLL_INTERVAL =
+    Number(
+        process.env.POLL_INTERVAL
+    ) || 5000;
+
+
+const PRINTER_NAME =
+    process.env.PRINTER_NAME ||
+    "Brother_DCP_T530DW";
+
+
 const DOWNLOAD_DIR =
-    path.join(
-        __dirname,
-        "downloads"
+    path.resolve(
+        process.env.DOWNLOAD_DIR ||
+        "./downloads"
     );
+
 
 const FOLDERS = [
     "normal",
     "express",
     "cash"
 ];
+
+
+/*
+|--------------------------------------------------------------------------
+| Express
+|--------------------------------------------------------------------------
+*/
+
+const app =
+    express();
+
+
+app.use(
+    express.json()
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| Dashboard
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+    "/dashboard",
+    dashboard
+);
 
 
 /*
@@ -38,16 +126,17 @@ const FOLDERS = [
 if (!SERVER_URL) {
 
     console.error(
-        "ERROR: SERVER_URL is missing in .env"
+        "SERVER_URL missing"
     );
 
     process.exit(1);
 }
+
 
 if (!FILE_API_KEY) {
 
     console.error(
-        "ERROR: FILE_API_KEY is missing in .env"
+        "FILE_API_KEY missing"
     );
 
     process.exit(1);
@@ -56,169 +145,74 @@ if (!FILE_API_KEY) {
 
 /*
 |--------------------------------------------------------------------------
-| Axios configuration
+| Axios
 |--------------------------------------------------------------------------
 */
 
-const api = axios.create({
+const api =
+    axios.create({
 
-    baseURL: SERVER_URL,
+        baseURL:
+            SERVER_URL,
 
-    timeout: 10000,
+        timeout:
+            10000,
 
-    headers: {
-        "X-API-Key": FILE_API_KEY
-    }
-});
+        headers: {
+
+            "X-API-Key":
+                FILE_API_KEY
+        }
+
+    });
 
 
 /*
 |--------------------------------------------------------------------------
-| Create local folders
+| Create directories
 |--------------------------------------------------------------------------
 */
 
-for (const folder of FOLDERS) {
+for (
+    const folder of FOLDERS
+) {
 
-    const folderPath =
+    fs.mkdirSync(
+
         path.join(
             DOWNLOAD_DIR,
             folder
-        );
+        ),
 
-    if (!fs.existsSync(folderPath)) {
+        {
+            recursive: true
+        }
 
-        fs.mkdirSync(
-            folderPath,
-            {
-                recursive: true
-            }
-        );
-    }
+    );
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| Check server
+| Convert directories
 |--------------------------------------------------------------------------
 */
 
-async function checkForNewFile() {
-
-    try {
-
-        const response =
-            await api.get(
-                "/api/files/next",
-                {
-                    validateStatus:
-                        status =>
-                            status === 200 ||
-                            status === 204
-                }
-            );
+const TEMP_DIR =
+    path.resolve("./temp");
 
 
-        /*
-        |--------------------------------------------------------------------------
-        | No file
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            response.status === 204
-        ) {
-
-            console.log(
-                `[${new Date().toLocaleTimeString()}] No new file`
-            );
-
-            return;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | File found
-        |--------------------------------------------------------------------------
-        */
-
-        const file =
-            response.data.file;
-
-        console.log("");
-        console.log(
-            "================================"
-        );
-
-        console.log(
-            "NEW FILE FOUND"
-        );
-
-        console.log(
-            "Folder:",
-            file.folder
-        );
-
-        console.log(
-            "File:",
-            file.name
-        );
-
-        console.log(
-            "Size:",
-            file.size,
-            "bytes"
-        );
-
-        console.log(
-            "================================"
-        );
-
-
-        await downloadFile(file);
-
-    } catch (error) {
-
-        if (
-            error.response?.status === 401
-        ) {
-
-            console.error(
-                "AUTHENTICATION FAILED:"
-            );
-
-            console.error(
-                "Invalid or missing FILE_API_KEY."
-            );
-
-            return;
-        }
-
-
-        if (error.response) {
-
-            console.error(
-                "Server error:",
-                error.response.status,
-                error.response.data
-            );
-
-        } else {
-
-            console.error(
-                "Connection error:",
-                error.message
-            );
-        }
+fs.mkdirSync(
+    TEMP_DIR,
+    {
+        recursive: true
     }
-}
+);
 
 
 /*
 |--------------------------------------------------------------------------
-| Download file
+| Download server file
 |--------------------------------------------------------------------------
 */
 
@@ -227,64 +221,70 @@ async function downloadFile(file) {
     const folder =
         file.folder;
 
-    const filename =
+
+    const originalFilename =
         path.basename(
             file.name
         );
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | Local folder
-    |--------------------------------------------------------------------------
-    */
-
-    const localFolder =
-        path.join(
-            DOWNLOAD_DIR,
-            folder
-        );
+    const extension =
+        path.extname(
+            originalFilename
+        )
+        .toLowerCase();
 
 
-    if (!fs.existsSync(localFolder)) {
-
-        fs.mkdirSync(
-            localFolder,
-            {
-                recursive: true
-            }
-        );
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Final path
-    |--------------------------------------------------------------------------
-    */
-
-    const finalPath =
-        path.join(
-            localFolder,
-            filename
+    const safeBaseName =
+        path.basename(
+            originalFilename,
+            extension
+        )
+        .replace(
+            /[^a-zA-Z0-9_-]/g,
+            "-"
         );
 
 
     /*
     |--------------------------------------------------------------------------
-    | Temporary file
+    | Temporary downloaded file
     |--------------------------------------------------------------------------
     */
 
     const tempPath =
-        finalPath +
-        ".downloading";
+        path.join(
+
+            TEMP_DIR,
+
+            `${Date.now()}-${safeBaseName}${extension}`
+
+        );
 
 
     try {
 
+        console.log("");
         console.log(
-            `Downloading ${folder}/${filename}`
+            "================================"
+        );
+
+        console.log(
+            "DOWNLOADING FILE"
+        );
+
+        console.log(
+            "Folder:",
+            folder
+        );
+
+        console.log(
+            "File:",
+            originalFilename
+        );
+
+        console.log(
+            "================================"
         );
 
 
@@ -293,62 +293,24 @@ async function downloadFile(file) {
 
                 `/api/files/download/` +
                 `${encodeURIComponent(folder)}/` +
-                `${encodeURIComponent(filename)}`,
+                `${encodeURIComponent(originalFilename)}`,
 
                 {
-                    responseType: "stream",
+                    responseType:
+                        "stream",
 
-                    timeout: 120000
+                    timeout:
+                        120000
                 }
+
             );
 
-
-        /*
-        |--------------------------------------------------------------------------
-        | Write file
-        |--------------------------------------------------------------------------
-        */
 
         const writer =
             fs.createWriteStream(
                 tempPath
             );
 
-
-        let downloadedBytes = 0;
-
-
-        response.data.on(
-            "data",
-            chunk => {
-
-                downloadedBytes +=
-                    chunk.length;
-
-
-                if (file.size > 0) {
-
-                    const percentage =
-                        (
-                            downloadedBytes /
-                            file.size *
-                            100
-                        ).toFixed(1);
-
-
-                    process.stdout.write(
-                        `\rDownloading ${folder}/${filename}: ${percentage}%`
-                    );
-                }
-            }
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Wait for download completion
-        |--------------------------------------------------------------------------
-        */
 
         await new Promise(
             (resolve, reject) => {
@@ -374,78 +336,28 @@ async function downloadFile(file) {
                     "error",
                     reject
                 );
+
             }
         );
 
 
-        console.log("");
-
-
         /*
         |--------------------------------------------------------------------------
-        | Verify size
+        | Convert to PDF
         |--------------------------------------------------------------------------
         */
 
-        const stats =
-            fs.statSync(
-                tempPath
+        const pdfPath =
+            await ensurePdf(
+                tempPath,
+                originalFilename,
+                folder
             );
 
 
-        if (
-            stats.size !== file.size
-        ) {
-
-            throw new Error(
-                `File size mismatch. Expected ${file.size}, received ${stats.size}`
-            );
-        }
-
-
         /*
         |--------------------------------------------------------------------------
-        | Rename
-        |--------------------------------------------------------------------------
-        */
-
-        fs.renameSync(
-            tempPath,
-            finalPath
-        );
-
-
-        console.log(
-            "Download completed:"
-        );
-
-        console.log(
-            finalPath
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | ACK
-        |--------------------------------------------------------------------------
-        */
-
-        await acknowledgeFile(
-            folder,
-            filename
-        );
-
-    } catch (error) {
-
-        console.error(
-            "\nDownload failed:",
-            error.message
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Delete incomplete download
+        | Delete temporary original
         |--------------------------------------------------------------------------
         */
 
@@ -453,24 +365,397 @@ async function downloadFile(file) {
             fs.existsSync(tempPath)
         ) {
 
-            try {
+            fs.unlinkSync(
+                tempPath
+            );
+        }
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save PDF in correct folder
+        |--------------------------------------------------------------------------
+        */
+
+        const finalFilename =
+            path.basename(
+                pdfPath
+            );
+
+
+        const finalFolder =
+            path.join(
+                DOWNLOAD_DIR,
+                folder
+            );
+
+
+        fs.mkdirSync(
+            finalFolder,
+            {
+                recursive: true
+            }
+        );
+
+
+        const finalPath =
+            path.join(
+                finalFolder,
+                finalFilename
+            );
+
+
+        fs.copyFileSync(
+            pdfPath,
+            finalPath
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Remove converted temporary PDF
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            pdfPath !== finalPath &&
+            fs.existsSync(pdfPath)
+        ) {
+
+            fs.unlinkSync(
+                pdfPath
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Local file size
+        |--------------------------------------------------------------------------
+        */
+
+        const stats =
+            fs.statSync(
+                finalPath
+            );
+
+
+        console.log(
+            "PDF saved:"
+        );
+
+        console.log(
+            finalPath
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | ACK server
+        |--------------------------------------------------------------------------
+        */
+
+        await acknowledgeFile(
+            folder,
+            originalFilename
+        );
+
+
+        return {
+
+            localPath:
+                finalPath,
+
+            size:
+                stats.size,
+
+            originalName:
+                originalFilename,
+
+            pdfName:
+                finalFilename
+        };
+
+
+    } catch (error) {
+
+        if (
+            fs.existsSync(
+                tempPath
+            )
+        ) {
+
+            try {
                 fs.unlinkSync(
                     tempPath
                 );
-
             } catch {}
         }
 
 
-        console.log(
-            "File remains on server."
-        );
+        throw error;
+    }
+}
 
-        console.log(
-            "It will be retried."
+
+/*
+|--------------------------------------------------------------------------
+| Ensure PDF
+|--------------------------------------------------------------------------
+*/
+
+async function ensurePdf(
+    inputPath,
+    originalName,
+    folder
+) {
+
+    const extension =
+        path.extname(
+            originalName
+        )
+        .toLowerCase();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Already PDF
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        extension === ".pdf"
+    ) {
+
+        return inputPath;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Images
+    |--------------------------------------------------------------------------
+    */
+
+    const imageExtensions = [
+
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".webp"
+
+    ];
+
+
+    if (
+        imageExtensions.includes(
+            extension
+        )
+    ) {
+
+        return await imageToPdf(
+            inputPath,
+            originalName
         );
     }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Everything else
+    |--------------------------------------------------------------------------
+    |
+    | DOC
+    | DOCX
+    | XLS
+    | XLSX
+    | PPT
+    | PPTX
+    | ODT
+    | etc.
+    |
+    */
+
+    return await libreOfficeToPdf(
+        inputPath
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Image → PDF
+|--------------------------------------------------------------------------
+*/
+
+async function imageToPdf(
+    imagePath,
+    originalName
+) {
+
+    const baseName =
+        path.basename(
+            originalName,
+            path.extname(
+                originalName
+            )
+        );
+
+
+    const outputPath =
+        path.join(
+
+            TEMP_DIR,
+
+            `${Date.now()}-${baseName}.pdf`
+
+        );
+
+
+    return await new Promise(
+        (resolve, reject) => {
+
+            const doc =
+                new PDFDocument({
+                    autoFirstPage:
+                        false
+                });
+
+
+            const stream =
+                fs.createWriteStream(
+                    outputPath
+                );
+
+
+            doc.pipe(stream);
+
+
+            /*
+            |--------------------------------------------------------------
+            | Add image to PDF
+            |--------------------------------------------------------------
+            */
+
+            doc.addPage();
+
+
+            doc.image(
+                imagePath,
+                0,
+                0,
+                {
+                    fit: [
+                        595,
+                        842
+                    ],
+
+                    align:
+                        "center",
+
+                    valign:
+                        "center"
+                }
+            );
+
+
+            doc.end();
+
+
+            stream.on(
+                "finish",
+                () => {
+
+                    resolve(
+                        outputPath
+                    );
+                }
+            );
+
+
+            stream.on(
+                "error",
+                reject
+            );
+
+        }
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| LibreOffice conversion
+|--------------------------------------------------------------------------
+*/
+
+async function libreOfficeToPdf(
+    inputPath
+) {
+
+    const outputDirectory =
+        TEMP_DIR;
+
+
+    await execFileAsync(
+
+        "libreoffice",
+
+        [
+
+            "--headless",
+
+            "--convert-to",
+            "pdf",
+
+            "--outdir",
+            outputDirectory,
+
+            inputPath
+
+        ],
+
+        {
+            timeout:
+                120000
+        }
+
+    );
+
+
+    const inputBaseName =
+        path.basename(
+            inputPath,
+            path.extname(
+                inputPath
+            )
+        );
+
+
+    const outputPath =
+        path.join(
+
+            outputDirectory,
+
+            `${inputBaseName}.pdf`
+
+        );
+
+
+    if (
+        !fs.existsSync(
+            outputPath
+        )
+    ) {
+
+        throw new Error(
+            "LibreOffice failed to create PDF"
+        );
+    }
+
+
+    return outputPath;
 }
 
 
@@ -485,50 +770,679 @@ async function acknowledgeFile(
     filename
 ) {
 
+    const response =
+        await api.post(
+            "/api/files/ack",
+
+            {
+                folder,
+                filename
+            }
+        );
+
+
+    console.log(
+        "Server ACK:",
+        response.data.message
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Fetch next file
+|--------------------------------------------------------------------------
+*/
+
+async function checkForNewFile() {
+
     try {
 
         const response =
-            await api.post(
-                "/api/files/ack",
+            await api.get(
+
+                "/api/files/next",
+
                 {
-                    folder,
-                    filename
+                    validateStatus:
+                        status =>
+                            status === 200 ||
+                            status === 204
                 }
+
             );
 
-
-        console.log(
-            "Server:",
-            response.data.message
-        );
-
-    } catch (error) {
 
         if (
-            error.response?.status === 401
+            response.status === 204
         ) {
 
-            console.error(
-                "ACK authentication failed."
-            );
+            return false;
+        }
 
-        } else {
 
-            console.error(
-                "ACK failed:",
-                error.message
-            );
+        const file =
+            response.data.file;
+
+
+        if (!file) {
+
+            return false;
         }
 
 
         console.log(
-            "Server file was NOT deleted."
+            "New file:",
+            file.name
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Download + convert
+        |--------------------------------------------------------------------------
+        */
+
+        const downloaded =
+            await downloadFile(
+                file
+            );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Database information
+        |--------------------------------------------------------------------------
+        */
+
+        const jobId =
+            file.jobId ||
+            file._id ||
+            crypto.randomUUID();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Express priority
+        |--------------------------------------------------------------------------
+        */
+
+        let priority = 0;
+
+
+        if (
+            file.folder ===
+            "express"
+        ) {
+
+            priority = 100;
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Create database job
+        |--------------------------------------------------------------------------
+        */
+
+        const job =
+            await createPrintJob({
+
+                _id:
+                    jobId,
+
+                userId:
+                    file.userId ||
+                    file.user?.id ||
+                    "unknown",
+
+                orderId:
+                    file.orderId,
+
+                originalName:
+                    file.originalName ||
+                    downloaded.originalName,
+
+                localFile:
+                    downloaded.localPath,
+
+                file:
+                    file.url ||
+                    file.file ||
+                    file.documentUrl,
+
+                size:
+                    downloaded.size,
+
+                options:
+                    file.options ||
+                    {},
+
+                folder:
+                    file.folder,
+
+                priority,
+
+                status:
+                    "pending"
+
+            });
+
+
+        console.log("");
+        console.log(
+            "PRINT JOB CREATED"
         );
 
         console.log(
-            "Local file is safe."
+            "Job ID:",
+            job._id
+        );
+
+        console.log(
+            "Priority:",
+            job.priority
+        );
+
+        console.log(
+            "Status:",
+            job.status
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Try to print
+        |--------------------------------------------------------------------------
+        */
+
+        await processQueue();
+
+
+        return true;
+
+
+    } catch (error) {
+
+        console.error(
+            "File processing error:",
+            error.message
+        );
+
+        return false;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Queue processor
+|--------------------------------------------------------------------------
+*/
+
+let queueProcessing =
+    false;
+
+
+async function processQueue() {
+
+    if (
+        queueProcessing
+    ) {
+
+        return;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Check whether something is already printing
+    |--------------------------------------------------------------------------
+    */
+
+    const current =
+        await getProcessingJob();
+
+
+    if (current) {
+
+        return;
+    }
+
+
+    queueProcessing = true;
+
+
+    try {
+
+        const jobs =
+            await getPendingJobs();
+
+
+        if (
+            jobs.length === 0
+        ) {
+
+            return;
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | First job according to priority/FIFO
+        |--------------------------------------------------------------------------
+        */
+
+        const job =
+            jobs[0];
+
+
+        console.log("");
+        console.log(
+            "================================"
+        );
+
+        console.log(
+            "STARTING PRINT JOB"
+        );
+
+        console.log(
+            "Job:",
+            job._id
+        );
+
+        console.log(
+            "File:",
+            job.originalName
+        );
+
+        console.log(
+            "Folder:",
+            job.folder
+        );
+
+        console.log(
+            "================================"
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Mark processing
+        |--------------------------------------------------------------------------
+        */
+
+        await updateJobStatus(
+            job._id,
+            "processing"
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Print
+        |--------------------------------------------------------------------------
+        */
+
+        await printJob(
+            job
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Queue error:",
+            error.message
+        );
+
+    } finally {
+
+        queueProcessing =
+            false;
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Print using CUPS
+|--------------------------------------------------------------------------
+*/
+
+async function printJob(job) {
+
+    try {
+
+        const options =
+            job.options || {};
+
+
+        const copies =
+            Number(
+                options.copies
+            ) || 1;
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Build CUPS arguments
+        |--------------------------------------------------------------------------
+        */
+
+        const args = [
+
+            "-d",
+            PRINTER_NAME,
+
+            "-o",
+            `copies=${copies}`,
+
+            "-o",
+            `PageSize=${options.paperSize || "A4"}`
+
+        ];
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Black & White
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            options.color ===
+            "monochrome" ||
+
+            options.printingType ===
+            "B&W"
+        ) {
+
+            args.push(
+                "-o",
+                "ColorModel=Gray"
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Duplex
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            options.duplex === true
+        ) {
+
+            args.push(
+                "-o",
+                "Duplex=DuplexNoTumble"
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Media type
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            options.mediaType
+        ) {
+
+            args.push(
+                "-o",
+                `MediaType=${options.mediaType}`
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Filename
+        |--------------------------------------------------------------------------
+        */
+
+        args.push(
+            job.localFile
+        );
+
+
+        console.log(
+            "CUPS command:"
+        );
+
+        console.log(
+            "lp",
+            args.join(" ")
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Execute lp
+        |--------------------------------------------------------------------------
+        */
+
+        const {
+            stdout
+        } = await execFileAsync(
+            "lp",
+            args
+        );
+
+
+        console.log(
+            "CUPS:",
+            stdout
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Extract CUPS job ID
+        |--------------------------------------------------------------------------
+        */
+
+        const match =
+            stdout.match(
+                /request id is\s+([^\s]+)/i
+            );
+
+
+        const cupsJobId =
+            match
+                ? match[1]
+                : null;
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save CUPS ID
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            cupsJobId
+        ) {
+
+            await setCupsJobId(
+                job._id,
+                cupsJobId
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Monitor CUPS
+        |--------------------------------------------------------------------------
+        */
+
+        await monitorCupsJob(
+            job._id,
+            cupsJobId
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Print failed:",
+            error.message
+        );
+
+
+        await updateJobStatus(
+
+            job._id,
+
+            "failed",
+
+            {
+                error:
+                    error.message
+            }
+
         );
     }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Monitor CUPS
+|--------------------------------------------------------------------------
+*/
+
+async function monitorCupsJob(
+    jobId,
+    cupsJobId
+) {
+
+    if (!cupsJobId) {
+
+        await updateJobStatus(
+            jobId,
+            "completed"
+        );
+
+        return;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Check every 2 seconds
+    |--------------------------------------------------------------------------
+    */
+
+    for (;;) {
+
+        await sleep(2000);
+
+
+        try {
+
+            const {
+                stdout
+            } = await execFileAsync(
+                "lpstat",
+                [
+                    "-W",
+                    "not-completed",
+                    "-o",
+                    PRINTER_NAME
+                ]
+            );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Still present = printing
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                stdout.includes(
+                    cupsJobId
+                )
+            ) {
+
+                continue;
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | No longer in queue
+            |--------------------------------------------------------------------------
+            */
+
+            await updateJobStatus(
+                jobId,
+                "completed"
+            );
+
+
+            console.log(
+                "Print completed:",
+                jobId
+            );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Start next job
+            |--------------------------------------------------------------------------
+            */
+
+            await processQueue();
+
+
+            break;
+
+
+        } catch (error) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | If lpstat doesn't find job, consider completed
+            |--------------------------------------------------------------------------
+            */
+
+            await updateJobStatus(
+                jobId,
+                "completed"
+            );
+
+
+            await processQueue();
+
+
+            break;
+        }
+    }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Sleep
+|--------------------------------------------------------------------------
+*/
+
+function sleep(ms) {
+
+    return new Promise(
+        resolve =>
+            setTimeout(
+                resolve,
+                ms
+            )
+    );
 }
 
 
@@ -538,12 +1452,16 @@ async function acknowledgeFile(
 |--------------------------------------------------------------------------
 */
 
-let isChecking = false;
+let isChecking =
+    false;
 
 
 async function pollServer() {
 
-    if (isChecking) {
+    if (
+        isChecking
+    ) {
+
         return;
     }
 
@@ -553,11 +1471,35 @@ async function pollServer() {
 
     try {
 
+        /*
+        |--------------------------------------------------------------------------
+        | Fetch at most one new server file
+        |--------------------------------------------------------------------------
+        */
+
         await checkForNewFile();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Process local queue
+        |--------------------------------------------------------------------------
+        */
+
+        await processQueue();
+
+
+    } catch (error) {
+
+        console.error(
+            "Polling error:",
+            error.message
+        );
 
     } finally {
 
-        isChecking = false;
+        isChecking =
+            false;
     }
 }
 
@@ -568,53 +1510,132 @@ async function pollServer() {
 |--------------------------------------------------------------------------
 */
 
-console.log(
-    "================================"
-);
+async function start() {
 
-console.log(
-    "Automatic File Downloader"
-);
+    console.log("");
+    console.log(
+        "================================"
+    );
 
-console.log(
-    "================================"
-);
+    console.log(
+        "UniKart Printer Client"
+    );
 
-console.log(
-    "Server:",
-    SERVER_URL
-);
+    console.log(
+        "================================"
+    );
 
-console.log(
-    "Download directory:",
-    DOWNLOAD_DIR
-);
+    console.log(
+        "Server:",
+        SERVER_URL
+    );
 
-console.log(
-    "API authentication: ENABLED"
-);
+    console.log(
+        "MongoDB:",
+        process.env.MONGO_URI
+    );
 
-console.log(
-    "================================"
-);
+    console.log(
+        "Printer:",
+        PRINTER_NAME
+    );
+
+    console.log(
+        "Download:",
+        DOWNLOAD_DIR
+    );
+
+    console.log(
+        "Poll:",
+        POLL_INTERVAL,
+        "ms"
+    );
+
+    console.log(
+        "Dashboard:",
+        `http://localhost:${PORT}/dashboard`
+    );
+
+    console.log(
+        "================================"
+    );
 
 
-/*
-|--------------------------------------------------------------------------
-| First check
-|--------------------------------------------------------------------------
-*/
+    /*
+    |--------------------------------------------------------------------------
+    | MongoDB
+    |--------------------------------------------------------------------------
+    */
 
-pollServer();
+    await connectDatabase();
 
 
-/*
-|--------------------------------------------------------------------------
-| Poll every 5 seconds
-|--------------------------------------------------------------------------
-*/
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP server
+    |--------------------------------------------------------------------------
+    */
 
-setInterval(
-    pollServer,
-    PORT
-);
+    app.get(
+        "/",
+        (req, res) => {
+
+            res.json({
+
+                success: true,
+
+                service:
+                    "UniKart Printer Client",
+
+                dashboard:
+                    "/dashboard"
+
+            });
+
+        }
+    );
+
+
+    app.listen(
+        PORT,
+        () => {
+
+            console.log(
+                `Dashboard server running on port ${PORT}`
+            );
+        }
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Initial queue processing
+    |--------------------------------------------------------------------------
+    */
+
+    await processQueue();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Initial server poll
+    |--------------------------------------------------------------------------
+    */
+
+    await pollServer();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Correct polling interval
+    |--------------------------------------------------------------------------
+    */
+
+    setInterval(
+        pollServer,
+        POLL_INTERVAL
+    );
+}
+
+
+start();
