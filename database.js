@@ -334,8 +334,8 @@ async function updateJobStatus(
         },
 
         {
-            new: true
-        }
+    returnDocument: "after"
+}
     );
 }
 
@@ -363,8 +363,8 @@ async function setCupsJobId(
         },
 
         {
-            new: true
-        }
+    returnDocument: "after"
+}
     );
 }
 
