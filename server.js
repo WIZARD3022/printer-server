@@ -221,30 +221,20 @@ async function downloadFile(file) {
     const folder =
         file.folder;
 
-
     const originalFilename =
-        path.basename(
-            file.name
-        );
-
+        path.basename(file.name);
 
     const extension =
-        path.extname(
-            originalFilename
-        )
-        .toLowerCase();
-
+        path.extname(originalFilename).toLowerCase();
 
     const safeBaseName =
         path.basename(
             originalFilename,
             extension
-        )
-        .replace(
+        ).replace(
             /[^a-zA-Z0-9_-]/g,
             "-"
         );
-
 
     /*
     |--------------------------------------------------------------------------
@@ -254,13 +244,9 @@ async function downloadFile(file) {
 
     const tempPath =
         path.join(
-
             TEMP_DIR,
-
             `${Date.now()}-${safeBaseName}${extension}`
-
         );
-
 
     try {
 
@@ -288,6 +274,12 @@ async function downloadFile(file) {
         );
 
 
+        /*
+        |--------------------------------------------------------------------------
+        | Download from UniKart server
+        |--------------------------------------------------------------------------
+        */
+
         const response =
             await api.get(
 
@@ -302,9 +294,14 @@ async function downloadFile(file) {
                     timeout:
                         120000
                 }
-
             );
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Write temporary file
+        |--------------------------------------------------------------------------
+        */
 
         const writer =
             fs.createWriteStream(
@@ -319,18 +316,15 @@ async function downloadFile(file) {
                     writer
                 );
 
-
                 writer.on(
                     "finish",
                     resolve
                 );
 
-
                 writer.on(
                     "error",
                     reject
                 );
-
 
                 response.data.on(
                     "error",
@@ -343,7 +337,23 @@ async function downloadFile(file) {
 
         /*
         |--------------------------------------------------------------------------
-        | Convert to PDF
+        | Verify temporary file exists
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !fs.existsSync(tempPath)
+        ) {
+
+            throw new Error(
+                `Downloaded file does not exist: ${tempPath}`
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Convert to PDF if required
         |--------------------------------------------------------------------------
         */
 
@@ -357,31 +367,25 @@ async function downloadFile(file) {
 
         /*
         |--------------------------------------------------------------------------
-        | Delete temporary original
+        | Verify PDF exists
         |--------------------------------------------------------------------------
         */
 
         if (
-            fs.existsSync(tempPath)
+            !fs.existsSync(pdfPath)
         ) {
 
-            fs.unlinkSync(
-                tempPath
+            throw new Error(
+                `PDF conversion failed. File not found: ${pdfPath}`
             );
         }
 
 
         /*
         |--------------------------------------------------------------------------
-        | Save PDF in correct folder
+        | Destination folder
         |--------------------------------------------------------------------------
         */
-
-        const finalFilename =
-            path.basename(
-                pdfPath
-            );
-
 
         const finalFolder =
             path.join(
@@ -398,12 +402,45 @@ async function downloadFile(file) {
         );
 
 
+        /*
+        |--------------------------------------------------------------------------
+        | Always save final file as .pdf
+        |--------------------------------------------------------------------------
+        */
+
+        let finalFilename =
+            path.basename(pdfPath);
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Make sure extension is .pdf
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !finalFilename
+                .toLowerCase()
+                .endsWith(".pdf")
+        ) {
+
+            finalFilename =
+                `${safeBaseName}.pdf`;
+        }
+
+
         const finalPath =
             path.join(
                 finalFolder,
                 finalFilename
             );
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Move/copy PDF to final location
+        |--------------------------------------------------------------------------
+        */
 
         fs.copyFileSync(
             pdfPath,
@@ -413,12 +450,30 @@ async function downloadFile(file) {
 
         /*
         |--------------------------------------------------------------------------
-        | Remove converted temporary PDF
+        | Now it is safe to remove temporary files
         |--------------------------------------------------------------------------
         */
 
         if (
-            pdfPath !== finalPath &&
+            fs.existsSync(tempPath) &&
+            tempPath !== pdfPath
+        ) {
+
+            fs.unlinkSync(
+                tempPath
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | If PDF was created separately in temp,
+        | delete it after copying
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            pdfPath !== tempPath &&
             fs.existsSync(pdfPath)
         ) {
 
@@ -430,9 +485,19 @@ async function downloadFile(file) {
 
         /*
         |--------------------------------------------------------------------------
-        | Local file size
+        | Verify final file
         |--------------------------------------------------------------------------
         */
+
+        if (
+            !fs.existsSync(finalPath)
+        ) {
+
+            throw new Error(
+                `Final PDF was not created: ${finalPath}`
+            );
+        }
+
 
         const stats =
             fs.statSync(
@@ -440,24 +505,52 @@ async function downloadFile(file) {
             );
 
 
+        console.log("");
         console.log(
-            "PDF saved:"
+            "PDF SAVED SUCCESSFULLY"
         );
 
         console.log(
+            "Original:",
+            originalFilename
+        );
+
+        console.log(
+            "PDF:",
+            finalFilename
+        );
+
+        console.log(
+            "Folder:",
+            folder
+        );
+
+        console.log(
+            "Path:",
             finalPath
+        );
+
+        console.log(
+            "Size:",
+            stats.size,
+            "bytes"
         );
 
 
         /*
         |--------------------------------------------------------------------------
-        | ACK server
+        | ACK only AFTER local PDF is safely saved
         |--------------------------------------------------------------------------
         */
 
         await acknowledgeFile(
             folder,
             originalFilename
+        );
+
+
+        console.log(
+            "Server file acknowledged."
         );
 
 
@@ -474,23 +567,61 @@ async function downloadFile(file) {
 
             pdfName:
                 finalFilename
+
         };
 
 
     } catch (error) {
 
+        console.error(
+            "\nFile processing failed:"
+        );
+
+        console.error(
+            error.message
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Cleanup temporary files
+        |--------------------------------------------------------------------------
+        */
+
         if (
-            fs.existsSync(
-                tempPath
-            )
+            fs.existsSync(tempPath)
         ) {
 
             try {
+
                 fs.unlinkSync(
                     tempPath
                 );
-            } catch {}
+
+            } catch (cleanupError) {
+
+                console.error(
+                    "Temp cleanup failed:",
+                    cleanupError.message
+                );
+            }
         }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | IMPORTANT:
+        | Do not ACK the server file if anything failed.
+        |--------------------------------------------------------------------------
+        */
+
+        console.log(
+            "Server file was NOT acknowledged."
+        );
+
+        console.log(
+            "It will be retried."
+        );
 
 
         throw error;
@@ -513,8 +644,7 @@ async function ensurePdf(
     const extension =
         path.extname(
             originalName
-        )
-        .toLowerCase();
+        ).toLowerCase();
 
 
     /*
@@ -538,13 +668,11 @@ async function ensurePdf(
     */
 
     const imageExtensions = [
-
         ".jpg",
         ".jpeg",
         ".png",
         ".bmp",
         ".webp"
-
     ];
 
 
@@ -563,25 +691,14 @@ async function ensurePdf(
 
     /*
     |--------------------------------------------------------------------------
-    | Everything else
+    | Office / other supported formats
     |--------------------------------------------------------------------------
-    |
-    | DOC
-    | DOCX
-    | XLS
-    | XLSX
-    | PPT
-    | PPTX
-    | ODT
-    | etc.
-    |
     */
 
     return await libreOfficeToPdf(
         inputPath
     );
 }
-
 
 /*
 |--------------------------------------------------------------------------
