@@ -11,7 +11,8 @@ const express = require("express");
 const {
     getQueue,
     getProcessingJob,
-    getPrintHistory
+    getPrintHistory,
+    getPrinterState
 } = require("./database");
 
 const router = express.Router();
@@ -37,6 +38,9 @@ router.get(
 
             const history =
                 await getPrintHistory(50);
+
+            const printerState =
+                await getPrinterState();
 
 
             const current =
@@ -166,6 +170,10 @@ body {
 }
 
 .metric strong {
+    .state-ready { color: #15803d !important; }
+    .state-printing { color: #0369a1 !important; }
+    .state-paused, .state-unknown { color: #a16207 !important; }
+    .state-offline, .state-error { color: #b91c1c !important; }
     display: block;
     color: #102a43;
     font-size: 28px;
@@ -420,6 +428,12 @@ summary {
 <div class="metrics">
 
 <div class="metric">
+<div class="label">Printer state</div>
+<strong class="state-${escapeHtml(printerState?.state || "unknown")}">${escapeHtml(printerState?.state || "unknown")}</strong>
+<div class="muted">${escapeHtml(printerState?.message || "No status check yet")}</div>
+</div>
+
+<div class="metric">
 <div class="label">Active job</div>
 <strong>${current ? "1" : "0"}</strong>
 <div class="muted">CUPS submission</div>
@@ -443,6 +457,18 @@ summary {
 <div class="muted">Recent history</div>
 </div>
 
+</div>
+
+<div class="card">
+<h2>Printer and Recovery</h2>
+<div class="grid">
+<div class="info"><div class="label">Printer</div><div class="value">${escapeHtml(printerState?.printerName || process.env.PRINTER_NAME || "-")}</div></div>
+<div class="info"><div class="label">Connection</div><div class="value">${printerState?.connected ? "Connected" : "Not connected"}</div></div>
+<div class="info"><div class="label">Active Job ID</div><div class="value">${escapeHtml(printerState?.activeJobId || "-")}</div></div>
+<div class="info"><div class="label">Last Command</div><div class="value">${escapeHtml(printerState?.lastCommand || "-")}</div></div>
+<div class="info"><div class="label">Last Checked</div><div class="value">${formatDate(printerState?.checkedAt)}</div></div>
+<div class="info"><div class="label">Last Error</div><div class="value">${escapeHtml(printerState?.lastError || "-")}</div></div>
+</div>
 </div>
 
 
@@ -882,6 +908,25 @@ router.get(
     }
 );
 
+router.get(
+    "/api/printer",
+    async (req, res) => {
+        try {
+            const state = await getPrinterState();
+
+            res.json({
+                success: true,
+                data: state
+            });
+        } catch (error) {
+            res.status(500).json({
+                success: false,
+                message: error.message
+            });
+        }
+    }
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -973,7 +1018,21 @@ ${options.copies || 1}
 <div class="info">
 <div class="label">Paper Size</div>
 <div class="value">
-${escapeHtml(options.paperSize || "A4")}
+${escapeHtml(options.paperSize || options.pageSize || "A4")} <span class="muted">(media size)</span>
+</div>
+</div>
+
+<div class="info">
+<div class="label">Input Slot</div>
+<div class="value">
+${escapeHtml(options.inputSlot || options.mediaSource || "Auto")} <span class="muted">(paper source)</span>
+</div>
+</div>
+
+<div class="info">
+<div class="label">Media Type</div>
+<div class="value">
+${escapeHtml(options.mediaType || "Stationery")} <span class="muted">(paper surface)</span>
 </div>
 </div>
 
@@ -981,7 +1040,7 @@ ${escapeHtml(options.paperSize || "A4")}
 <div class="info">
 <div class="label">Color</div>
 <div class="value">
-${escapeHtml(options.color || "-")}
+${escapeHtml(options.colorModel || options.color || "RGB")} <span class="muted">(output mode)</span>
 </div>
 </div>
 
@@ -989,7 +1048,7 @@ ${escapeHtml(options.color || "-")}
 <div class="info">
 <div class="label">Printing Type</div>
 <div class="value">
-${escapeHtml(options.printingType || "-")}
+${escapeHtml(options.printingType || "Standard")} <span class="muted">(job mode)</span>
 </div>
 </div>
 
@@ -997,7 +1056,7 @@ ${escapeHtml(options.printingType || "-")}
 <div class="info">
 <div class="label">Duplex</div>
 <div class="value">
-${options.duplex ? "Yes" : "No"}
+${escapeHtml(options.duplexMode || (options.duplex ? "DuplexNoTumble" : "None"))} <span class="muted">(page sides)</span>
 </div>
 </div>
 
@@ -1005,7 +1064,14 @@ ${options.duplex ? "Yes" : "No"}
 <div class="info">
 <div class="label">Quality</div>
 <div class="value">
-${escapeHtml(options.quality || "-")}
+${escapeHtml(options.cupsPrintQuality || options.quality || "Normal")} <span class="muted">(ink quality)</span>
+</div>
+
+<div class="info">
+<div class="label">Output Bin</div>
+<div class="value">
+${escapeHtml(options.outputBin || "FaceUp")} <span class="muted">(paper output)</span>
+</div>
 </div>
 </div>
 
@@ -1037,7 +1103,7 @@ ${options.paperWeight || "-"} GSM
 <div class="info">
 <div class="label">Pages</div>
 <div class="value">
-${options.pages || "-"}
+${options.pages || "All"} <span class="muted">(page count)</span>
 </div>
 </div>
 
@@ -1045,7 +1111,7 @@ ${options.pages || "-"}
 <div class="info">
 <div class="label">Page Selection</div>
 <div class="value">
-${escapeHtml(options.pageSelection || "All Pages")}
+${escapeHtml(options.pageSelection || "All Pages")} <span class="muted">(range)</span>
 </div>
 </div>
 

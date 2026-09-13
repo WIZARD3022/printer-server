@@ -187,6 +187,33 @@ const printJobSchema = new mongoose.Schema(
     }
 );
 
+const printerStateSchema = new mongoose.Schema(
+    {
+        _id: {
+            type: String,
+            default: "default"
+        },
+        printerName: String,
+        state: {
+            type: String,
+            enum: ["ready", "printing", "paused", "offline", "error", "unknown"],
+            default: "unknown"
+        },
+        connected: {
+            type: Boolean,
+            default: false
+        },
+        message: String,
+        activeJobId: String,
+        lastCommand: String,
+        lastError: String,
+        checkedAt: Date
+    },
+    {
+        timestamps: true
+    }
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -200,6 +227,10 @@ const PrintJob =
         "PrintJob",
         printJobSchema
     );
+
+const PrinterState =
+    mongoose.models.PrinterState ||
+    mongoose.model("PrinterState", printerStateSchema);
 
 
 /*
@@ -297,8 +328,55 @@ async function getPendingJobs() {
 async function getProcessingJob() {
 
     return await PrintJob.findOne({
-        status: "processing"
+        status: {
+            $in: ["processing", "submitted"]
+        }
+    }).sort({
+        updatedAt: -1
     });
+}
+
+async function getRecoverableJob() {
+    return await PrintJob.findOne({
+        status: {
+            $in: ["processing", "submitted"]
+        }
+    }).sort({
+        updatedAt: -1
+    });
+}
+
+async function getPrinterState() {
+    return await PrinterState.findById("default");
+}
+
+async function updatePrinterState(data) {
+    const set = {
+        ...data,
+        checkedAt: new Date()
+    };
+
+    const unset = {};
+
+    Object.keys(set).forEach(key => {
+        if (set[key] === undefined) {
+            unset[key] = "";
+            delete set[key];
+        }
+    });
+
+    return await PrinterState.findByIdAndUpdate(
+        "default",
+        {
+            $set: set,
+            ...(Object.keys(unset).length > 0 ? { $unset: unset } : {})
+        },
+        {
+            new: true,
+            upsert: true,
+            setDefaultsOnInsert: true
+        }
+    );
 }
 
 
@@ -313,16 +391,27 @@ async function updateJobStatus(
     status,
     extra = {}
 ) {
+    const set = {
+        status,
+        ...extra
+    };
+
+    const unset = {};
+
+    Object.keys(set).forEach(key => {
+        if (set[key] === undefined) {
+            unset[key] = "";
+            delete set[key];
+        }
+    });
 
     return await PrintJob.findByIdAndUpdate(
 
         jobId,
 
         {
-            $set: {
-                status,
-                ...extra
-            }
+            $set: set,
+            ...(Object.keys(unset).length > 0 ? { $unset: unset } : {})
         },
 
         {
@@ -432,6 +521,9 @@ module.exports = {
     getPendingJobs,
 
     getProcessingJob,
+    getRecoverableJob,
+    getPrinterState,
+    updatePrinterState,
 
     updateJobStatus,
 

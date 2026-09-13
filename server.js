@@ -28,6 +28,7 @@ const PDFDocument = require("pdfkit");
 
 const {
     getQueueStatus,
+    getPrinterStatus,
     submitPrint
 } = require("./printer");
 
@@ -36,6 +37,8 @@ const {
     connectDatabase,
     getPendingJobs,
     getProcessingJob,
+    getRecoverableJob,
+    updatePrinterState,
     updateJobStatus,
     setCupsJobId
 } = require("./database");
@@ -452,10 +455,7 @@ async function downloadFile(file, acknowledge = false) {
         |--------------------------------------------------------------------------
         */
 
-        if (
-            fs.existsSync(tempPath) &&
-            tempPath !== pdfPath
-        ) {
+        if (fs.existsSync(tempPath)) {
 
             fs.unlinkSync(
                 tempPath
@@ -470,10 +470,7 @@ async function downloadFile(file, acknowledge = false) {
         |--------------------------------------------------------------------------
         */
 
-        if (
-            pdfPath !== tempPath &&
-            fs.existsSync(pdfPath)
-        ) {
+        if (pdfPath !== tempPath && fs.existsSync(pdfPath)) {
 
             fs.unlinkSync(
                 pdfPath
@@ -1001,6 +998,24 @@ async function processQueue() {
 
 
     try {
+        const printerState = await getPrinterStatus();
+
+        await updatePrinterState({
+            printerName: process.env.PRINTER_NAME,
+            connected: printerState.connected,
+            state: printerState.state,
+            message: printerState.message,
+            lastError: printerState.connected ? undefined : printerState.message
+        });
+
+        if (!printerState.connected || printerState.state !== "ready") {
+            console.error(
+                "Printer is not ready:",
+                printerState.message
+            );
+
+            return;
+        }
 
         const jobs =
             await getPendingJobs();
@@ -1135,6 +1150,12 @@ async function processQueue() {
             "processing"
         );
 
+        await updatePrinterState({
+            state: "printing",
+            activeJobId: job._id,
+            lastError: undefined
+        });
+
 
         /*
         |--------------------------------------------------------------------------
@@ -1149,6 +1170,13 @@ async function processQueue() {
 
     } catch (error) {
 
+        await updatePrinterState({
+            state: "error",
+            connected: false,
+            message: error.message,
+            lastError: error.message
+        }).catch(() => {});
+
         console.error(
             "Queue error:",
             error.message
@@ -1159,6 +1187,46 @@ async function processQueue() {
         queueProcessing =
             false;
     }
+}
+
+async function recoverPrinterJob() {
+    const job = await getRecoverableJob();
+
+    if (!job) {
+        return;
+    }
+
+    console.log(
+        "Recovering print job:",
+        job._id,
+        job.status
+    );
+
+    if (job.status === "submitted" && job.cupsJobId) {
+        await updatePrinterState({
+            state: "printing",
+            connected: true,
+            activeJobId: job._id,
+            message: "Monitoring recovered CUPS job"
+        });
+
+        await monitorCupsJob(
+            job._id,
+            job.cupsJobId,
+            job
+        );
+
+        return;
+    }
+
+    await updateJobStatus(
+        job._id,
+        "pending",
+        {
+            cupsJobId: undefined,
+            error: "Recovered after printer service restart"
+        }
+    );
 }
 
 
@@ -1178,6 +1246,15 @@ async function printJob(job) {
         console.log("CUPS command:", result.command);
         console.log("CUPS:", result.stdout);
 
+        await updatePrinterState({
+            state: "printing",
+            connected: true,
+            activeJobId: job._id,
+            lastCommand: result.command,
+            message: result.stdout.trim(),
+            lastError: undefined
+        });
+
         if (result.cupsJobId) {
             await setCupsJobId(
                 job._id,
@@ -1192,6 +1269,14 @@ async function printJob(job) {
         );
     } catch (error) {
         console.error("Print failed:", error.message);
+
+        await updatePrinterState({
+            state: error.code === "ENOENT" ? "offline" : "error",
+            connected: false,
+            activeJobId: job._id,
+            message: error.message,
+            lastError: error.message
+        }).catch(() => {});
 
         await updateJobStatus(
             job._id,
@@ -1224,6 +1309,14 @@ async function monitorCupsJob(
         );
 
         await acknowledgePrintedFile(job);
+
+        await updatePrinterState({
+            state: "ready",
+            connected: true,
+            activeJobId: undefined,
+            message: "Print completed",
+            lastError: undefined
+        });
 
         return;
     }
@@ -1274,6 +1367,14 @@ async function monitorCupsJob(
 
             await acknowledgePrintedFile(job);
 
+            await updatePrinterState({
+                state: "ready",
+                connected: true,
+                activeJobId: undefined,
+                message: "Print completed",
+                lastError: undefined
+            });
+
 
             console.log(
                 "Print completed:",
@@ -1301,18 +1402,29 @@ async function monitorCupsJob(
             |--------------------------------------------------------------------------
             */
 
-            await updateJobStatus(
-                jobId,
-                "completed"
-            );
+            await updatePrinterState({
+                state: error.code === "ENOENT" ? "offline" : "error",
+                connected: false,
+                activeJobId: jobId,
+                message: error.message,
+                lastError: error.message
+            });
 
-            await acknowledgePrintedFile(job);
+            if (error.code === "ENOENT") {
+                await updateJobStatus(
+                    jobId,
+                    "failed",
+                    {
+                        error: `Printer monitoring failed: ${error.message}`
+                    }
+                );
 
+                break;
+            }
 
-            await processQueue();
+            await sleep(5000);
 
-
-            break;
+            continue;
         }
     }
 }
@@ -1515,6 +1627,7 @@ async function start() {
     |--------------------------------------------------------------------------
     */
 
+    await recoverPrinterJob();
     await processQueue();
 
 

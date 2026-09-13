@@ -143,18 +143,63 @@ async function submitPrint(filePath, options = {}) {
 }
 
 async function getQueueStatus() {
-    const { stdout } = await execFileAsync(
-        "lpstat",
-        ["-W", "not-completed", "-o", PRINTER_NAME]
-    );
+    try {
+        const { stdout } = await execFileAsync(
+            "lpstat",
+            ["-W", "not-completed", "-o", PRINTER_NAME]
+        );
 
-    return stdout;
+        return stdout;
+    } catch (error) {
+        if (error.code === 1) {
+            return error.stdout || "";
+        }
+
+        throw error;
+    }
+}
+
+async function getPrinterStatus() {
+    if (!PRINTER_NAME) {
+        return {
+            connected: false,
+            state: "error",
+            message: "PRINTER_NAME missing"
+        };
+    }
+
+    try {
+        const { stdout } = await execFileAsync(
+            "lpstat",
+            ["-p", PRINTER_NAME]
+        );
+
+        const lower = stdout.toLowerCase();
+        const paused = lower.includes("disabled") || lower.includes("paused");
+
+        return {
+            connected: true,
+            state: paused ? "paused" : "ready",
+            message: stdout.trim()
+        };
+    } catch (error) {
+        const notInstalled = error.code === "ENOENT";
+
+        return {
+            connected: false,
+            state: notInstalled ? "offline" : "error",
+            message: notInstalled
+                ? "CUPS commands are not installed or not in PATH"
+                : error.stderr || error.message
+        };
+    }
 }
 
 module.exports = {
     CAPABILITIES,
     buildPrintCommand,
     getQueueStatus,
+    getPrinterStatus,
     normalizeOptions,
     submitPrint
 };
