@@ -14,8 +14,6 @@ const fs = require("fs");
 
 const path = require("path");
 
-const crypto = require("crypto");
-
 const express = require("express");
 
 const {
@@ -31,7 +29,6 @@ const PDFDocument = require("pdfkit");
 
 const {
     connectDatabase,
-    createPrintJob,
     getPendingJobs,
     getProcessingJob,
     updateJobStatus,
@@ -215,7 +212,7 @@ fs.mkdirSync(
 |--------------------------------------------------------------------------
 */
 
-async function downloadFile(file) {
+async function downloadFile(file, acknowledge = false) {
 
     const folder =
         file.folder;
@@ -282,6 +279,7 @@ async function downloadFile(file) {
         const response =
             await api.get(
 
+                file.downloadUrl ||
                 `/api/files/download/` +
                 `${encodeURIComponent(folder)}/` +
                 `${encodeURIComponent(originalFilename)}`,
@@ -542,15 +540,16 @@ async function downloadFile(file) {
         |--------------------------------------------------------------------------
         */
 
-        await acknowledgeFile(
-            folder,
-            originalFilename
-        );
+        if (acknowledge) {
+            await acknowledgeFile(
+                folder,
+                originalFilename
+            );
 
-
-        console.log(
-            "Server file acknowledged."
-        );
+            console.log(
+                "Server file acknowledged."
+            );
+        }
 
 
         return {
@@ -903,6 +902,39 @@ async function acknowledgeFile(
     );
 }
 
+async function acknowledgeOriginalFile(folder, originalName) {
+    const response = await api.post(
+        "/api/files/ack-by-original",
+        {
+            folder,
+            originalName
+        }
+    );
+
+    console.log(
+        "Server file acknowledged:",
+        response.data.message
+    );
+}
+
+async function acknowledgePrintedFile(job) {
+    if (!job.folder || !job.originalName) {
+        return;
+    }
+
+    try {
+        await acknowledgeOriginalFile(
+            job.folder,
+            job.originalName
+        );
+    } catch (error) {
+        console.error(
+            "Could not acknowledge printed file:",
+            error.message
+        );
+    }
+}
+
 
 /*
 |--------------------------------------------------------------------------
@@ -913,168 +945,6 @@ async function acknowledgeFile(
 async function checkForNewFile() {
 
     try {
-
-        const response =
-            await api.get(
-
-                "/api/files/next",
-
-                {
-                    validateStatus:
-                        status =>
-                            status === 200 ||
-                            status === 204
-                }
-
-            );
-
-
-        if (
-            response.status === 204
-        ) {
-
-            return false;
-        }
-
-
-        const file =
-            response.data.file;
-
-
-        if (!file) {
-
-            return false;
-        }
-
-
-        console.log(
-            "New file:",
-            file.name
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Download + convert
-        |--------------------------------------------------------------------------
-        */
-
-        const downloaded =
-            await downloadFile(
-                file
-            );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Database information
-        |--------------------------------------------------------------------------
-        */
-
-        const jobId =
-            file.jobId ||
-            file._id ||
-            crypto.randomUUID();
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Express priority
-        |--------------------------------------------------------------------------
-        */
-
-        let priority = 0;
-
-
-        if (
-            file.folder ===
-            "express"
-        ) {
-
-            priority = 100;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Create database job
-        |--------------------------------------------------------------------------
-        */
-
-        const job =
-            await createPrintJob({
-
-                _id:
-                    jobId,
-
-                userId:
-                    file.userId ||
-                    file.user?.id ||
-                    "unknown",
-
-                orderId:
-                    file.orderId,
-
-                originalName:
-                    file.originalName ||
-                    downloaded.originalName,
-
-                localFile:
-                    downloaded.localPath,
-
-                file:
-                    file.url ||
-                    file.file ||
-                    file.documentUrl,
-
-                size:
-                    downloaded.size,
-
-                options:
-                    file.options ||
-                    {},
-
-                folder:
-                    file.folder,
-
-                priority,
-
-                status:
-                    "pending"
-
-            });
-
-
-        console.log("");
-        console.log(
-            "PRINT JOB CREATED"
-        );
-
-        console.log(
-            "Job ID:",
-            job._id
-        );
-
-        console.log(
-            "Priority:",
-            job.priority
-        );
-
-        console.log(
-            "Status:",
-            job.status
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Try to print
-        |--------------------------------------------------------------------------
-        */
-
-        await processQueue();
-
-
         return true;
 
 
@@ -1142,6 +1012,20 @@ async function processQueue() {
             return;
         }
 
+        jobs.sort((first, second) => {
+            const firstPriority =
+                first.folder === "express" ? 100 : first.priority || 0;
+
+            const secondPriority =
+                second.folder === "express" ? 100 : second.priority || 0;
+
+            if (firstPriority !== secondPriority) {
+                return secondPriority - firstPriority;
+            }
+
+            return first.createdAt - second.createdAt;
+        });
+
 
         /*
         |--------------------------------------------------------------------------
@@ -1180,6 +1064,45 @@ async function processQueue() {
         console.log(
             "================================"
         );
+
+        if (!job.localFile || !fs.existsSync(job.localFile)) {
+            try {
+                const downloaded = await downloadFile({
+                    folder: job.folder,
+                    name: job.originalName,
+                    downloadUrl:
+                        `/api/files/download-by-original/` +
+                        `${encodeURIComponent(job.folder)}/` +
+                        `${encodeURIComponent(job.originalName)}`
+                });
+
+                await updateJobStatus(
+                    job._id,
+                    "pending",
+                    {
+                        localFile: downloaded.localPath,
+                        size: downloaded.size
+                    }
+                );
+
+                job.localFile = downloaded.localPath;
+            } catch (error) {
+                await updateJobStatus(
+                    job._id,
+                    "failed",
+                    {
+                        error: `File download failed: ${error.message}`
+                    }
+                );
+
+                console.error(
+                    "File download failed:",
+                    error.message
+                );
+
+                return;
+            }
+        }
 
 
         /*
@@ -1399,7 +1322,8 @@ async function printJob(job) {
 
         await monitorCupsJob(
             job._id,
-            cupsJobId
+            cupsJobId,
+            job
         );
 
 
@@ -1435,7 +1359,8 @@ async function printJob(job) {
 
 async function monitorCupsJob(
     jobId,
-    cupsJobId
+    cupsJobId,
+    job
 ) {
 
     if (!cupsJobId) {
@@ -1444,6 +1369,8 @@ async function monitorCupsJob(
             jobId,
             "completed"
         );
+
+        await acknowledgePrintedFile(job);
 
         return;
     }
@@ -1502,6 +1429,8 @@ async function monitorCupsJob(
                 "completed"
             );
 
+            await acknowledgePrintedFile(job);
+
 
             console.log(
                 "Print completed:",
@@ -1533,6 +1462,8 @@ async function monitorCupsJob(
                 jobId,
                 "completed"
             );
+
+            await acknowledgePrintedFile(job);
 
 
             await processQueue();
@@ -1586,15 +1517,6 @@ async function pollServer() {
 
 
     try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Fetch at most one new server file
-        |--------------------------------------------------------------------------
-        */
-
-        await checkForNewFile();
-
 
         /*
         |--------------------------------------------------------------------------
@@ -1730,15 +1652,6 @@ async function start() {
     */
 
     await processQueue();
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Initial server poll
-    |--------------------------------------------------------------------------
-    */
-
-    await pollServer();
 
 
     /*
