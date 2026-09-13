@@ -42,6 +42,18 @@ router.get(
             const current =
                 processing;
 
+            const pendingCount = queue.filter(
+                job => job.status === "pending"
+            ).length;
+
+            const failedCount = history.filter(
+                job => job.status === "failed"
+            ).length;
+
+            const completedCount = history.filter(
+                job => job.status === "completed"
+            ).length;
+
 
             res.send(`
 
@@ -71,28 +83,24 @@ body {
 
     margin: 0;
 
-    font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
+    font-family: "Segoe UI", Arial, sans-serif;
 
-    background:
-        #f4f6f8;
+    background: #eef2f5;
 
     color:
         #222;
 }
 
 .header {
-
-    background:
-        #111827;
+    background: linear-gradient(135deg, #102a43, #1f4e5f);
 
     color:
         white;
 
     padding:
-        20px 30px;
+        28px 30px;
+
+    box-shadow: 0 8px 24px rgba(16,42,67,.18);
 
 }
 
@@ -124,6 +132,56 @@ body {
     padding:
         25px;
 
+}
+
+.header-row {
+    max-width: 1400px;
+    margin: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.live {
+    border: 1px solid rgba(255,255,255,.35);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 20px;
+}
+
+.metric {
+    background: white;
+    border: 1px solid #d8e0e7;
+    border-radius: 10px;
+    padding: 18px;
+}
+
+.metric strong {
+    display: block;
+    color: #102a43;
+    font-size: 28px;
+    margin-top: 5px;
+}
+
+.muted {
+    color: #64748b;
+    font-size: 13px;
+}
+
+@media (max-width: 800px) {
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .header-row { align-items: flex-start; flex-direction: column; }
+    .container { padding: 16px; }
+    table { display: block; overflow-x: auto; white-space: nowrap; }
 }
 
 .card {
@@ -336,18 +394,56 @@ summary {
 
 <div class="header">
 
+<div class="header-row">
+
+<div>
+
     <h1>
         UniKart Printer Dashboard
     </h1>
 
     <p>
-        Automatic PDF Print Queue
+        Automatic PDF print queue and CUPS monitor
     </p>
+
+</div>
+
+<div class="live">● Live · refreshes every 5 seconds</div>
+
+</div>
 
 </div>
 
 
 <div class="container">
+
+<div class="metrics">
+
+<div class="metric">
+<div class="label">Active job</div>
+<strong>${current ? "1" : "0"}</strong>
+<div class="muted">CUPS submission</div>
+</div>
+
+<div class="metric">
+<div class="label">Waiting</div>
+<strong>${pendingCount}</strong>
+<div class="muted">Pending print jobs</div>
+</div>
+
+<div class="metric">
+<div class="label">Completed</div>
+<strong>${completedCount}</strong>
+<div class="muted">Recent history</div>
+</div>
+
+<div class="metric">
+<div class="label">Failed</div>
+<strong>${failedCount}</strong>
+<div class="muted">Recent history</div>
+</div>
+
+</div>
 
 
 <!-- CURRENT PRINT -->
@@ -376,13 +472,30 @@ ${escapeHtml(current._id)}
 
 </div>
 
+<div class="info">
+<div class="label">Folder / Priority</div>
+<div class="value">${escapeHtml(current.folder || "-")} / ${current.priority || 0}</div>
+</div>
 
 <div class="info">
+<div class="label">Local PDF</div>
+<div class="value">${escapeHtml(current.localFile || "-")}</div>
+</div>
 
+<div class="info">
+<div class="label">File Size</div>
+<div class="value">${formatBytes(current.size)}</div>
+</div>
+
+<div class="info">
+<div class="label">Started</div>
+<div class="value">${formatDate(current.updatedAt)}</div>
+</div>
+
+<div class="info">
 <div class="label">
 User ID
 </div>
-
 <div class="value">
 ${escapeHtml(current.userId)}
 </div>
@@ -818,6 +931,23 @@ function formatDate(date) {
 
     return new Date(date)
         .toLocaleString();
+}
+
+function formatBytes(bytes) {
+    if (!bytes) {
+        return "-";
+    }
+
+    const units = ["B", "KB", "MB", "GB"];
+    let value = Number(bytes);
+    let unit = 0;
+
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+    }
+
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 

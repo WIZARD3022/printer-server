@@ -269,7 +269,17 @@ async function getPendingJobs() {
 
     return await PrintJob
         .find({
-            status: "pending"
+            $or: [
+                {
+                    status: "pending"
+                },
+                {
+                    status: "failed",
+                    error: {
+                        $regex: /^File download failed:/
+                    }
+                }
+            ]
         })
         .sort({
             priority: -1,

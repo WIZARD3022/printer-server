@@ -26,6 +26,11 @@ const {
 
 const PDFDocument = require("pdfkit");
 
+const {
+    getQueueStatus,
+    submitPrint
+} = require("./printer");
+
 
 const {
     connectDatabase,
@@ -66,10 +71,6 @@ const POLL_INTERVAL =
     Number(
         process.env.POLL_INTERVAL
     ) || 5000;
-
-
-const PRINTER_NAME =
-    process.env.PRINTER_NAME;
 
 
 const DOWNLOAD_DIR =
@@ -1013,11 +1014,14 @@ async function processQueue() {
         }
 
         jobs.sort((first, second) => {
+            const firstFolder = resolveJobFolder(first);
+            const secondFolder = resolveJobFolder(second);
+
             const firstPriority =
-                first.folder === "express" ? 100 : first.priority || 0;
+                firstFolder === "express" ? 100 : first.priority || 0;
 
             const secondPriority =
-                second.folder === "express" ? 100 : second.priority || 0;
+                secondFolder === "express" ? 100 : second.priority || 0;
 
             if (firstPriority !== secondPriority) {
                 return secondPriority - firstPriority;
@@ -1035,6 +1039,21 @@ async function processQueue() {
 
         const job =
             jobs[0];
+
+        const folder =
+            resolveJobFolder(job);
+
+        if (job.folder !== folder) {
+            await updateJobStatus(
+                job._id,
+                "pending",
+                {
+                    folder
+                }
+            );
+
+            job.folder = folder;
+        }
 
 
         console.log("");
@@ -1058,7 +1077,7 @@ async function processQueue() {
 
         console.log(
             "Folder:",
-            job.folder
+            folder
         );
 
         console.log(
@@ -1068,11 +1087,11 @@ async function processQueue() {
         if (!job.localFile || !fs.existsSync(job.localFile)) {
             try {
                 const downloaded = await downloadFile({
-                    folder: job.folder,
+                    folder,
                     name: job.originalName,
                     downloadUrl:
                         `/api/files/download-by-original/` +
-                        `${encodeURIComponent(job.folder)}/` +
+                        `${encodeURIComponent(folder)}/` +
                         `${encodeURIComponent(job.originalName)}`
                 });
 
@@ -1145,207 +1164,41 @@ async function processQueue() {
 
 /*
 |--------------------------------------------------------------------------
-| Print using CUPS
+| Submit print job through the dedicated printer module
 |--------------------------------------------------------------------------
 */
 
 async function printJob(job) {
-
     try {
-
-        const options =
-            job.options || {};
-
-
-        const copies =
-            Number(
-                options.copies
-            ) || 1;
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Build CUPS arguments
-        |--------------------------------------------------------------------------
-        */
-
-        const args = [
-
-            "-d",
-            PRINTER_NAME,
-
-            "-o",
-            `copies=${copies}`,
-
-            "-o",
-            `PageSize=${options.paperSize || "A4"}`
-
-        ];
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Black & White
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            options.color ===
-            "monochrome" ||
-
-            options.printingType ===
-            "B&W"
-        ) {
-
-            args.push(
-                "-o",
-                "ColorModel=Gray"
-            );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Duplex
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            options.duplex === true
-        ) {
-
-            args.push(
-                "-o",
-                "Duplex=DuplexNoTumble"
-            );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Media type
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            options.mediaType
-        ) {
-
-            args.push(
-                "-o",
-                `MediaType=${options.mediaType}`
-            );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Filename
-        |--------------------------------------------------------------------------
-        */
-
-        args.push(
-            job.localFile
+        const result = await submitPrint(
+            job.localFile,
+            job.options || {}
         );
 
+        console.log("CUPS command:", result.command);
+        console.log("CUPS:", result.stdout);
 
-        console.log(
-            "CUPS command:"
-        );
-
-        console.log(
-            "lp",
-            args.join(" ")
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Execute lp
-        |--------------------------------------------------------------------------
-        */
-
-        const {
-            stdout
-        } = await execFileAsync(
-            "lp",
-            args
-        );
-
-
-        console.log(
-            "CUPS:",
-            stdout
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Extract CUPS job ID
-        |--------------------------------------------------------------------------
-        */
-
-        const match =
-            stdout.match(
-                /request id is\s+([^\s]+)/i
-            );
-
-
-        const cupsJobId =
-            match
-                ? match[1]
-                : null;
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Save CUPS ID
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            cupsJobId
-        ) {
-
+        if (result.cupsJobId) {
             await setCupsJobId(
                 job._id,
-                cupsJobId
+                result.cupsJobId
             );
         }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Monitor CUPS
-        |--------------------------------------------------------------------------
-        */
 
         await monitorCupsJob(
             job._id,
-            cupsJobId,
+            result.cupsJobId,
             job
         );
-
-
     } catch (error) {
-
-        console.error(
-            "Print failed:",
-            error.message
-        );
-
+        console.error("Print failed:", error.message);
 
         await updateJobStatus(
-
             job._id,
-
             "failed",
-
             {
-                error:
-                    error.message
+                error: error.message
             }
-
         );
     }
 }
@@ -1389,17 +1242,7 @@ async function monitorCupsJob(
 
         try {
 
-            const {
-                stdout
-            } = await execFileAsync(
-                "lpstat",
-                [
-                    "-W",
-                    "not-completed",
-                    "-o",
-                    PRINTER_NAME
-                ]
-            );
+            const stdout = await getQueueStatus();
 
 
             /*
@@ -1492,6 +1335,27 @@ function sleep(ms) {
     );
 }
 
+function resolveJobFolder(job) {
+    if (FOLDERS.includes(job.folder)) {
+        return job.folder;
+    }
+
+    const sourceFile = String(job.file || "");
+    const folderFromUrl = sourceFile.match(
+        /\/uploads\/(normal|express|cash)(?:\/|$)/i
+    );
+
+    if (folderFromUrl) {
+        return folderFromUrl[1].toLowerCase();
+    }
+
+    if (FOLDERS.includes(job.options?.folder)) {
+        return job.options.folder;
+    }
+
+    return "normal";
+}
+
 
 /*
 |--------------------------------------------------------------------------
@@ -1575,7 +1439,7 @@ async function start() {
 
     console.log(
         "Printer:",
-        PRINTER_NAME
+        process.env.PRINTER_NAME
     );
 
     console.log(
