@@ -72,8 +72,7 @@ const POLL_INTERVAL =
 
 
 const PRINTER_NAME =
-    process.env.PRINTER_NAME ||
-    "Brother_DCP_T530DW";
+    process.env.PRINTER_NAME;
 
 
 const DOWNLOAD_DIR =
@@ -245,7 +244,7 @@ async function downloadFile(file) {
     const tempPath =
         path.join(
             TEMP_DIR,
-            `${Date.now()}-${safeBaseName}${extension}`
+            `${safeBaseName}${extension}`
         );
 
     try {

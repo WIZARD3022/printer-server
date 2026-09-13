@@ -210,56 +210,38 @@ const PrintJob =
 
 async function createPrintJob(data) {
 
-    const job =
-        new PrintJob({
+    const update = {
+        userId: data.userId,
+        orderId: data.orderId,
+        cupsJobId: data.cupsJobId,
+        originalName: data.originalName,
+        localFile: data.localFile,
+        file: data.file,
+        size: data.size,
+        options: data.options || {},
+        folder: data.folder,
+        priority: data.priority || 0,
+        queuePosition: data.queuePosition || 0,
+        status: data.status || "pending",
+        error: data.error
+    };
 
-            _id:
-                data._id,
+    Object.keys(update).forEach(key => {
+        if (update[key] === undefined) {
+            delete update[key];
+        }
+    });
 
-            userId:
-                data.userId,
-
-            orderId:
-                data.orderId,
-
-            cupsJobId:
-                data.cupsJobId,
-
-            originalName:
-                data.originalName,
-
-            localFile:
-                data.localFile,
-
-            file:
-                data.file,
-
-            size:
-                data.size,
-
-            options:
-                data.options || {},
-
-            folder:
-                data.folder,
-
-            priority:
-                data.priority || 0,
-
-            queuePosition:
-                data.queuePosition || 0,
-
-            status:
-                data.status || "pending",
-
-            error:
-                data.error
-        });
-
-
-    await job.save();
-
-    return job;
+    return await PrintJob.findByIdAndUpdate(
+        data._id,
+        { $set: update },
+        {
+            new: true,
+            upsert: true,
+            setDefaultsOnInsert: true,
+            runValidators: true
+        }
+    );
 }
 
 
