@@ -44,11 +44,26 @@ function normalizeOptions(options = {}) {
         options.color === "monochrome" || options.printingType === "B&W" ? "Gray" : options.color,
         "RGB"
     ), CAPABILITIES.colorModels, { color: "RGB", monochrome: "Gray", bw: "Gray", "b&w": "Gray" });
-    const duplex = canonicalValue(firstValue(
+    const duplexValue = firstValue(
         options.duplexMode,
-        options.duplex === true ? "DuplexNoTumble" : options.duplex,
+        options.duplex,
         "None"
-    ), CAPABILITIES.duplexModes, { none: "None", duplex: "DuplexNoTumble" });
+    );
+    const duplex = canonicalValue(
+        duplexValue === true
+            ? "DuplexNoTumble"
+            : duplexValue === false
+                ? "None"
+                : duplexValue,
+        CAPABILITIES.duplexModes,
+        {
+            none: "None",
+            duplex: "DuplexNoTumble",
+            false: "None",
+            off: "None",
+            simplex: "None"
+        }
+    );
     const quality = canonicalValue(firstValue(options.cupsPrintQuality, options.quality, "Normal"), CAPABILITIES.qualities);
     const inputSlot = canonicalValue(firstValue(options.inputSlot, options.mediaSource, "Auto"), CAPABILITIES.inputSlots);
     const mediaType = canonicalValue(firstValue(options.mediaType, "Stationery"), CAPABILITIES.mediaTypes, {
