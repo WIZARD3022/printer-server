@@ -33,17 +33,76 @@ function canonicalValue(value, values, aliases = {}) {
     return values.find(option => option.toLowerCase() === candidate.toLowerCase()) || candidate;
 }
 
+function normalizeCustomPageSize(options) {
+    const requestedSize = firstValue(options.paperSize, options.pageSize);
+    const isCustom = String(requestedSize || "").toLowerCase() === "custom";
+
+    if (!isCustom) {
+        return null;
+    }
+
+    const customSize = firstValue(
+        options.customPageSize,
+        options.customSize,
+        options.mediaSize
+    );
+    const sizeMatch = typeof customSize === "string"
+        ? customSize.trim().match(/^(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)(mm|cm|in)?$/i)
+        : null;
+    const width = firstValue(options.customWidth, options.pageWidth, options.width, sizeMatch?.[1]);
+    const height = firstValue(options.customHeight, options.pageHeight, options.height, sizeMatch?.[2]);
+    const unit = String(firstValue(options.customUnit, options.pageUnit, options.unit, sizeMatch?.[3], "mm")).toLowerCase();
+    const allowedUnits = new Set(["mm", "cm", "in"]);
+
+    if (!width || !height || !allowedUnits.has(unit)) {
+        throw new Error("Custom paper size requires positive width, height, and unit (mm, cm, or in)");
+    }
+
+    const numericWidth = Number(width);
+    const numericHeight = Number(height);
+
+    if (!Number.isFinite(numericWidth) || !Number.isFinite(numericHeight) || numericWidth <= 0 || numericHeight <= 0) {
+        throw new Error("Custom paper width and height must be positive numbers");
+    }
+
+    return `Custom.${numericWidth}x${numericHeight}${unit}`;
+}
+
 function normalizeOptions(options = {}) {
-    const pageSize = canonicalValue(
+    const customPageSize = normalizeCustomPageSize(options);
+    const pageSize = customPageSize || canonicalValue(
         firstValue(options.paperSize, options.pageSize, "A4"),
         CAPABILITIES.pageSizes,
         { "a4 borderless": "A4.Borderless" }
     );
-    const color = canonicalValue(firstValue(
-        options.colorModel,
-        options.color === "monochrome" || options.printingType === "B&W" ? "Gray" : options.color,
-        "RGB"
-    ), CAPABILITIES.colorModels, { color: "RGB", monochrome: "Gray", bw: "Gray", "b&w": "Gray" });
+    const printingType = String(options.printingType || "").trim().toLowerCase();
+    const monochromeRequested = [
+        "b&w",
+        "b & w",
+        "bw",
+        "black and white",
+        "black-and-white",
+        "blackwhite",
+        "monochrome",
+        "mono"
+    ].includes(printingType) || options.color === false || options.isColor === false;
+    const color = canonicalValue(
+        monochromeRequested ? "Gray" : firstValue(options.colorModel, options.color, "RGB"),
+        CAPABILITIES.colorModels,
+        {
+        color: "RGB",
+        colour: "RGB",
+        true: "RGB",
+        monochrome: "Gray",
+        mono: "Gray",
+        bw: "Gray",
+        "b&w": "Gray",
+        "black and white": "Gray",
+        "black-and-white": "Gray",
+        blackwhite: "Gray",
+        false: "Gray"
+        }
+    );
     const duplexValue = firstValue(
         options.duplexMode,
         options.duplex,
@@ -75,7 +134,7 @@ function normalizeOptions(options = {}) {
     const outputBin = canonicalValue(firstValue(options.outputBin, "FaceUp"), CAPABILITIES.outputBins);
     const copies = Math.max(1, Math.min(999, Number(options.copies) || 1));
 
-    if (!CAPABILITIES.pageSizes.includes(pageSize) || pageSize === "Custom") {
+    if (!customPageSize && !CAPABILITIES.pageSizes.includes(pageSize)) {
         throw new Error(`Unsupported paper size: ${pageSize}`);
     }
 
@@ -129,6 +188,7 @@ function buildPrintCommand(filePath, options = {}) {
         "-o", `MediaType=${printOptions.mediaType}`,
         "-o", `cupsPrintQuality=${printOptions.quality}`,
         "-o", `ColorModel=${printOptions.color}`,
+        "-o", `BRColorMode=${printOptions.color === "Gray" ? "Mono" : "Color"}`,
         "-o", `Duplex=${printOptions.duplex}`,
         "-o", `OutputBin=${printOptions.outputBin}`,
         filePath
