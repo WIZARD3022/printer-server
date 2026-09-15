@@ -267,7 +267,7 @@ async function createPrintJob(data) {
         data._id,
         { $set: update },
         {
-            new: true,
+            returnDocument: "after",
             upsert: true,
             setDefaultsOnInsert: true,
             runValidators: true
@@ -289,6 +289,38 @@ async function getPrintJob(jobId) {
     );
 }
 
+async function getUsersByIds(userIds) {
+    const ids = [...new Set(
+        userIds.filter(Boolean).map(String)
+    )];
+
+    if (ids.length === 0) {
+        return new Map();
+    }
+
+    const users = await mongoose.connection.collection("users")
+        .find({ _id: { $in: ids } })
+        .toArray();
+
+    return new Map(users.map(user => [String(user._id), user]));
+}
+
+async function updateOrderStatus(orderId, status) {
+    if (!orderId) {
+        return { matchedCount: 0, modifiedCount: 0 };
+    }
+
+    return await mongoose.connection.collection("orders").updateOne(
+        { _id: orderId },
+        {
+            $set: {
+                status,
+                updatedAt: new Date()
+            }
+        }
+    );
+}
+
 
 /*
 |--------------------------------------------------------------------------
@@ -300,17 +332,9 @@ async function getPendingJobs() {
 
     return await PrintJob
         .find({
-            $or: [
-                {
-                    status: "pending"
-                },
-                {
-                    status: "failed",
-                    error: {
-                        $regex: /^File download failed:/
-                    }
-                }
-            ]
+            status: {
+                $in: ["pending", "failed"]
+            }
         })
         .sort({
             priority: -1,
@@ -372,7 +396,7 @@ async function updatePrinterState(data) {
             ...(Object.keys(unset).length > 0 ? { $unset: unset } : {})
         },
         {
-            new: true,
+            returnDocument: "after",
             upsert: true,
             setDefaultsOnInsert: true
         }
@@ -432,6 +456,11 @@ async function setCupsJobId(
     cupsJobId
 ) {
 
+    const current = await PrintJob.findById(jobId);
+    if (!current) {
+        return null;
+    }
+
     return await PrintJob.findByIdAndUpdate(
 
         jobId,
@@ -439,7 +468,7 @@ async function setCupsJobId(
         {
             $set: {
                 cupsJobId,
-                status: "submitted"
+                ...(current.status === "cancelled" ? {} : { status: "submitted" })
             }
         },
 
@@ -518,6 +547,8 @@ module.exports = {
 
     getPrintJob,
 
+    getUsersByIds,
+    updateOrderStatus,
     getPendingJobs,
 
     getProcessingJob,

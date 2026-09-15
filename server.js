@@ -29,6 +29,7 @@ const PDFDocument = require("pdfkit");
 const {
     getQueueStatus,
     getPrinterStatus,
+    cancelPrint,
     submitPrint
 } = require("./printer");
 
@@ -38,6 +39,8 @@ const {
     getPendingJobs,
     getProcessingJob,
     getRecoverableJob,
+    getPrintJob,
+    updateOrderStatus,
     updatePrinterState,
     updateJobStatus,
     setCupsJobId
@@ -1119,6 +1122,8 @@ async function processQueue() {
                     }
                 );
 
+                await markOrderStatus(job, "PROCESSING");
+
                 job.localFile = downloaded.localPath;
             } catch (error) {
                 await updateJobStatus(
@@ -1149,6 +1154,8 @@ async function processQueue() {
             job._id,
             "processing"
         );
+
+        await markOrderStatus(job, "PROCESSING");
 
         await updatePrinterState({
             state: "printing",
@@ -1256,10 +1263,22 @@ async function printJob(job) {
         });
 
         if (result.cupsJobId) {
-            await setCupsJobId(
+            const submittedJob = await setCupsJobId(
                 job._id,
                 result.cupsJobId
             );
+
+            if (submittedJob?.status === "cancelled") {
+                await cancelPrint(result.cupsJobId).catch(() => {});
+                await updatePrinterState({
+                    state: "ready",
+                    connected: true,
+                    activeJobId: undefined,
+                    message: "Print rejected before submission completed",
+                    lastError: undefined
+                });
+                return;
+            }
         }
 
         await monitorCupsJob(
@@ -1308,6 +1327,8 @@ async function monitorCupsJob(
             "completed"
         );
 
+        await markOrderStatus(job, "READY");
+
         await acknowledgePrintedFile(job);
 
         await updatePrinterState({
@@ -1334,6 +1355,19 @@ async function monitorCupsJob(
 
 
         try {
+
+            const latestJob = await getPrintJob(jobId);
+            if (!latestJob || latestJob.status === "cancelled") {
+                await updatePrinterState({
+                    state: "ready",
+                    connected: true,
+                    activeJobId: undefined,
+                    message: "Print cancelled",
+                    lastError: undefined
+                });
+                await processQueue();
+                break;
+            }
 
             const stdout = await getQueueStatus();
 
@@ -1364,6 +1398,8 @@ async function monitorCupsJob(
                 jobId,
                 "completed"
             );
+
+            await markOrderStatus(job, "READY");
 
             await acknowledgePrintedFile(job);
 
@@ -1466,6 +1502,21 @@ function resolveJobFolder(job) {
     }
 
     return "normal";
+}
+
+async function markOrderStatus(job, status) {
+    if (!job?.orderId) {
+        return;
+    }
+
+    try {
+        const result = await updateOrderStatus(job.orderId, status);
+        if (result.matchedCount === 0) {
+            console.warn("Order not found while updating status:", job.orderId, status);
+        }
+    } catch (error) {
+        console.error("Order status update failed:", error.message);
+    }
 }
 
 

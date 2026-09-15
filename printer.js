@@ -33,6 +33,32 @@ function canonicalValue(value, values, aliases = {}) {
     return values.find(option => option.toLowerCase() === candidate.toLowerCase()) || candidate;
 }
 
+function normalizePageSelection(options) {
+    const selection = firstValue(options.pageSelection, options.pageRange);
+    const isCustomRange = selection && /^(custom range|custom)$/i.test(String(selection).trim());
+    const value = isCustomRange
+        ? firstValue(options.customPages, options.pages)
+        : selection;
+
+    if (!value || /^(all|all pages)$/i.test(String(value).trim())) {
+        return null;
+    }
+
+    const pageSelection = String(value).trim();
+    if (!/^\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*$/.test(pageSelection)) {
+        throw new Error("Page selection must use CUPS format, for example 1-3,5");
+    }
+
+    for (const part of pageSelection.split(",")) {
+        const [start, end = start] = part.split("-").map(Number);
+        if (start < 1 || end < start) {
+            throw new Error("Page selection must contain page numbers in ascending order");
+        }
+    }
+
+    return pageSelection.replace(/\s+/g, "");
+}
+
 function normalizeCustomPageSize(options) {
     const requestedSize = firstValue(options.paperSize, options.pageSize);
     const isCustom = String(requestedSize || "").toLowerCase() === "custom";
@@ -132,6 +158,7 @@ function normalizeOptions(options = {}) {
         inkjet: "Stationery Inkjet"
     });
     const outputBin = canonicalValue(firstValue(options.outputBin, "FaceUp"), CAPABILITIES.outputBins);
+    const pageSelection = normalizePageSelection(options);
     const copies = Math.max(1, Math.min(999, Number(options.copies) || 1));
 
     if (!customPageSize && !CAPABILITIES.pageSizes.includes(pageSize)) {
@@ -166,7 +193,8 @@ function normalizeOptions(options = {}) {
         quality,
         color,
         duplex,
-        outputBin
+        outputBin,
+        pageSelection
     };
 }
 
@@ -188,9 +216,9 @@ function buildPrintCommand(filePath, options = {}) {
         "-o", `MediaType=${printOptions.mediaType}`,
         "-o", `cupsPrintQuality=${printOptions.quality}`,
         "-o", `ColorModel=${printOptions.color}`,
-        "-o", `BRColorMode=${printOptions.color === "Gray" ? "Mono" : "Color"}`,
         "-o", `Duplex=${printOptions.duplex}`,
         "-o", `OutputBin=${printOptions.outputBin}`,
+        ...(printOptions.pageSelection ? ["-P", printOptions.pageSelection] : []),
         filePath
     ];
 
@@ -215,6 +243,33 @@ async function submitPrint(filePath, options = {}) {
         stderr,
         cupsJobId: stdout.match(/request id is\s+([^\s]+)/i)?.[1] || null
     };
+}
+
+async function cancelPrint(cupsJobId) {
+    if (!cupsJobId) {
+        return { cancelled: false, message: "CUPS job ID missing" };
+    }
+
+    const { stdout, stderr } = await execFileAsync(
+        "cancel",
+        [cupsJobId]
+    );
+
+    return {
+        cancelled: true,
+        stdout,
+        stderr
+    };
+}
+
+async function setPrinterEnabled(enabled) {
+    const command = enabled ? "cupsenable" : "cupsdisable";
+    const { stdout, stderr } = await execFileAsync(
+        command,
+        [PRINTER_NAME]
+    );
+
+    return { stdout, stderr };
 }
 
 async function getQueueStatus() {
@@ -276,5 +331,7 @@ module.exports = {
     getQueueStatus,
     getPrinterStatus,
     normalizeOptions,
+    cancelPrint,
+    setPrinterEnabled,
     submitPrint
 };
