@@ -325,6 +325,26 @@ async function getPrintJob(jobId) {
     );
 }
 
+async function getOrder(orderId) {
+    if (!orderId) {
+        return null;
+    }
+
+    return await mongoose.connection.collection("orders").findOne({
+        _id: orderId
+    });
+}
+
+async function getUser(userId) {
+    if (!userId) {
+        return null;
+    }
+
+    return await mongoose.connection.collection("users").findOne({
+        _id: userId
+    });
+}
+
 async function getUsersByIds(userIds) {
     const ids = [...new Set(
         userIds.filter(Boolean).map(String)
@@ -581,7 +601,7 @@ async function getPrintHistory(
         .find({
             status: {
                 $in: [
-                    "READY",
+                    "completed",
                     "failed",
                     "cancelled"
                 ]
@@ -610,6 +630,8 @@ module.exports = {
     createPrintJob,
 
     getPrintJob,
+    getOrder,
+    getUser,
 
     getUsersByIds,
     updateOrderStatus,

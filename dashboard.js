@@ -7,6 +7,7 @@
 */
 
 const express = require("express");
+const QRCode = require("qrcode");
 
 const {
     getQueue,
@@ -14,6 +15,8 @@ const {
     getPrintHistory,
     getPrinterState,
     getPrintJob,
+    getOrder,
+    getUser,
     getUsersByIds,
     updateJobStatus,
     updatePrinterState,
@@ -31,6 +34,10 @@ const {
     getPrinterStatus,
     setPrinterEnabled
 } = require("./printer");
+
+const {
+    sendCancellationEmail
+} = require("./email");
 
 const router = express.Router();
 
@@ -60,6 +67,22 @@ router.post(
             });
 
             await updateOrderStatus(job.orderId, "CANCELLED");
+
+            try {
+                const [user, order] = await Promise.all([
+                    getUser(job.userId),
+                    getOrder(job.orderId)
+                ]);
+                await sendCancellationEmail(
+                    user,
+                    order || { id: job.orderId },
+                    cancelError
+                        ? `Rejected from dashboard; printer cancellation failed: ${cancelError.message}`
+                        : "Rejected manually from the printer dashboard"
+                );
+            } catch (emailError) {
+                console.error("Cancellation email failed:", emailError.message);
+            }
 
             if (wasActive) {
                 await updatePrinterState({
@@ -170,11 +193,26 @@ router.get(
                 ...history.map(job => job.userId)
             ]);
 
+            const orderIds = [...new Set([
+                processing?.orderId,
+                ...queue.map(job => job.orderId),
+                ...history.map(job => job.orderId)
+            ].filter(Boolean).map(String))];
+            const ordersById = new Map(await Promise.all(
+                orderIds.map(async orderId => [orderId, await getOrder(orderId)])
+            ));
+
             const current = processing
-                ? withUserName(processing, usersById)
+                ? await withOrderQr(withUserName(processing, usersById), ordersById)
                 : processing;
-            const displayQueue = queue.map(job => withUserName(job, usersById));
-            const displayHistory = history.map(job => withUserName(job, usersById));
+            const displayQueue = await Promise.all(queue.map(job => withOrderQr(
+                withUserName(job, usersById),
+                ordersById
+            )));
+            const displayHistory = await Promise.all(history.map(job => withOrderQr(
+                withUserName(job, usersById),
+                ordersById
+            )));
 
             const pendingCount = displayQueue.filter(
                 job => job.status === "pending"
@@ -424,6 +462,20 @@ body {
     border-radius:
         8px;
 
+}
+
+.order-qr {
+    width: 72px;
+    height: 72px;
+    display: block;
+    background: #ffffff;
+    border: 1px solid #dbe3ec;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+.qr-cell {
+    width: 84px;
 }
 
 .label {
@@ -816,6 +868,11 @@ ${escapeHtml(current.orderId || "-")}
 
 </div>
 
+<div class="info">
+<div class="label">Order QR</div>
+${orderQrMarkup(current)}
+</div>
+
 
 <div class="info">
 
@@ -908,6 +965,8 @@ ${displayQueue.length > 0 ? `
 
 <th>Order</th>
 
+<th>QR</th>
+
 <th>Status</th>
 
 <th>Pages</th>
@@ -957,6 +1016,10 @@ ${escapeHtml(job.userName)}
 
 <td>
 ${escapeHtml(job.orderId || "-")}
+</td>
+
+<td class="qr-cell">
+${orderQrMarkup(job)}
 </td>
 
 
@@ -1037,6 +1100,8 @@ ${displayHistory.length > 0 ? `
 
 <th>User</th>
 
+<th>Order QR</th>
+
 <th>Status</th>
 
 <th>CUPS Job</th>
@@ -1066,6 +1131,10 @@ ${escapeHtml(job.folder || "-")}
 
 <td>
 ${escapeHtml(job.userName)}
+</td>
+
+<td class="qr-cell">
+${orderQrMarkup(job)}
 </td>
 
 <td>
@@ -1313,6 +1382,49 @@ function withUserName(job, usersById) {
         ...plainJob,
         userName: name || "Unknown user"
     };
+}
+
+async function withOrderQr(job, ordersById) {
+    const order = ordersById.get(String(job.orderId || ""));
+    const orderNumber = order && (
+        order.orderNumber ||
+        order.id ||
+        order._id
+    ) || job.orderId;
+
+    if (!orderNumber) {
+        return {
+            ...job,
+            orderNumber: null,
+            qrCode: null
+        };
+    }
+
+    try {
+        return {
+            ...job,
+            orderNumber: String(orderNumber),
+            qrCode: await QRCode.toDataURL(String(orderNumber), {
+                margin: 1,
+                width: 250
+            })
+        };
+    } catch (error) {
+        console.error("Dashboard QR generation failed:", error.message);
+        return {
+            ...job,
+            orderNumber: String(orderNumber),
+            qrCode: null
+        };
+    }
+}
+
+function orderQrMarkup(job) {
+    if (!job?.qrCode) {
+        return `<span class="muted">No order QR</span>`;
+    }
+
+    return `<img class="order-qr" src="${escapeHtml(job.qrCode)}" alt="QR code for order ${escapeHtml(job.orderNumber)}" title="${escapeHtml(job.orderNumber)}">`;
 }
 
 function jobDetails(job) {

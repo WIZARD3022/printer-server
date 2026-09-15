@@ -41,11 +41,17 @@ const {
     getProcessingJob,
     getRecoverableJob,
     getPrintJob,
+    getOrder,
+    getUser,
     updateOrderStatus,
     updatePrinterState,
     updateJobStatus,
     setCupsJobId
 } = require("./database");
+
+const {
+    sendCompletionEmail
+} = require("./email");
 
 
 const dashboard =
@@ -1017,6 +1023,21 @@ async function acknowledgePrintedFile(job) {
     }
 }
 
+async function sendCompletionNotification(job) {
+    try {
+        const [user, order] = await Promise.all([
+            getUser(job.userId),
+            getOrder(job.orderId)
+        ]);
+        await sendCompletionEmail(
+            user,
+            order || { id: job.orderId }
+        );
+    } catch (error) {
+        console.error("Completion email failed:", error.message);
+    }
+}
+
 
 /*
 |--------------------------------------------------------------------------
@@ -1405,10 +1426,12 @@ async function monitorCupsJob(
 
         await updateJobStatus(
             jobId,
-            "READY"
+            "completed"
         );
 
         await markOrderStatus(job, "READY");
+
+        await sendCompletionNotification(job);
 
         await acknowledgePrintedFile(job);
 
@@ -1477,10 +1500,12 @@ async function monitorCupsJob(
 
             await updateJobStatus(
                 jobId,
-                "READY"
+                "completed"
             );
 
             await markOrderStatus(job, "READY");
+
+            await sendCompletionNotification(job);
 
             await acknowledgePrintedFile(job);
 
