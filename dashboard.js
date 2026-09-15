@@ -21,6 +21,12 @@ const {
 } = require("./database");
 
 const {
+    BACKUP_DIR,
+    backupDatabase,
+    getRecentBackups
+} = require("./backup");
+
+const {
     cancelPrint,
     getPrinterStatus,
     setPrinterEnabled
@@ -116,6 +122,20 @@ router.post(
     }
 );
 
+router.post(
+    "/api/backup",
+    async (req, res) => {
+        try {
+            const result = await backupDatabase({ trigger: "manual" });
+            res.redirect(
+                `/dashboard/?backup=${result.success ? "completed" : "pending"}`
+            );
+        } catch (error) {
+            res.status(500).send(`Unable to create backup: ${escapeHtml(error.message)}`);
+        }
+    }
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -140,6 +160,9 @@ router.get(
 
             const printerState =
                 await getPrinterState();
+
+            const recentBackups =
+                await getRecentBackups(3);
 
             const usersById = await getUsersByIds([
                 processing?.userId,
@@ -691,6 +714,7 @@ td form {
 <button class="action" type="submit">Resume printer</button>
 </form>
 </div>
+
 <div class="grid">
 <div class="info"><div class="label">Printer</div><div class="value">${escapeHtml(printerState?.printerName || process.env.PRINTER_NAME || "-")}</div></div>
 <div class="info"><div class="label">Connection</div><div class="value">${printerState?.connected ? "Connected" : "Not connected"}</div></div>
@@ -705,6 +729,21 @@ ${current ? `
 <button class="action danger" type="submit">Reject and cancel current print</button>
 </form>
 ` : ""}
+</div>
+
+<div class="card">
+<h2>MongoDB Backup</h2>
+<div class="printer-actions">
+<form method="post" action="/dashboard/api/backup">
+<button class="action" type="submit">Backup now</button>
+</form>
+</div>
+<div class="grid">
+<div class="info"><div class="label">Backup drive</div><div class="value command-value">${escapeHtml(BACKUP_DIR)}</div></div>
+<div class="info"><div class="label">Latest backup</div><div class="value">${recentBackups[0] ? `${escapeHtml(recentBackups[0].backupDate)} (${escapeHtml(recentBackups[0].status)})` : "No backup recorded"}</div></div>
+<div class="info"><div class="label">Recent backups</div><div class="value">${recentBackups.filter(backup => backup.status === "completed").length} / 3</div></div>
+<div class="info"><div class="label">Last error</div><div class="value">${escapeHtml(recentBackups.find(backup => backup.error)?.error || "-")}</div></div>
+</div>
 </div>
 
 

@@ -51,6 +51,10 @@ const {
 const dashboard =
     require("./dashboard");
 
+const {
+    scheduleDailyBackup
+} = require("./backup");
+
 
 const execFileAsync =
     promisify(execFile);
@@ -1710,6 +1714,8 @@ async function start() {
     */
 
     await connectDatabase();
+
+    scheduleDailyBackup();
 
 
     /*

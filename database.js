@@ -214,6 +214,38 @@ const printerStateSchema = new mongoose.Schema(
     }
 );
 
+const backupSchema = new mongoose.Schema(
+    {
+        _id: {
+            type: String,
+            required: true
+        },
+        backupDate: {
+            type: String,
+            required: true,
+            index: true
+        },
+        status: {
+            type: String,
+            enum: ["pending", "running", "completed", "failed"],
+            default: "pending",
+            index: true
+        },
+        path: String,
+        size: Number,
+        error: String,
+        trigger: {
+            type: String,
+            enum: ["scheduled", "manual"],
+            default: "scheduled"
+        },
+        completedAt: Date
+    },
+    {
+        timestamps: true
+    }
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -231,6 +263,10 @@ const PrintJob =
 const PrinterState =
     mongoose.models.PrinterState ||
     mongoose.model("PrinterState", printerStateSchema);
+
+const Backup =
+    mongoose.models.Backup ||
+    mongoose.model("Backup", backupSchema);
 
 
 /*
@@ -319,6 +355,33 @@ async function updateOrderStatus(orderId, status) {
             }
         }
     );
+}
+
+async function upsertBackup(backupDate, data = {}) {
+    return await Backup.findOneAndUpdate(
+        { backupDate },
+        {
+            $set: data,
+            $setOnInsert: {
+                _id: backupDate
+            }
+        },
+        {
+            upsert: true,
+            returnDocument: "after",
+            setDefaultsOnInsert: true
+        }
+    );
+}
+
+async function getBackup(backupDate) {
+    return await Backup.findOne({ backupDate });
+}
+
+async function getRecentBackups(limit = 10) {
+    return await Backup.find()
+        .sort({ backupDate: -1 })
+        .limit(limit);
 }
 
 
@@ -542,6 +605,7 @@ module.exports = {
     connectDatabase,
 
     PrintJob,
+    Backup,
 
     createPrintJob,
 
@@ -549,6 +613,9 @@ module.exports = {
 
     getUsersByIds,
     updateOrderStatus,
+    upsertBackup,
+    getBackup,
+    getRecentBackups,
     getPendingJobs,
 
     getProcessingJob,
