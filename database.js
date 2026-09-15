@@ -581,7 +581,7 @@ async function getPrintHistory(
         .find({
             status: {
                 $in: [
-                    "completed",
+                    "READY",
                     "failed",
                     "cancelled"
                 ]
