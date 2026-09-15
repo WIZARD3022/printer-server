@@ -30,7 +30,8 @@ const {
     getQueueStatus,
     getPrinterStatus,
     cancelPrint,
-    submitPrint
+    submitPrint,
+    normalizeOptions
 } = require("./printer");
 
 
@@ -219,7 +220,7 @@ fs.mkdirSync(
 |--------------------------------------------------------------------------
 */
 
-async function downloadFile(file, acknowledge = false) {
+async function downloadFile(file, acknowledge = false, printOptions = {}) {
 
     const folder =
         file.folder;
@@ -368,6 +369,14 @@ async function downloadFile(file, acknowledge = false) {
                 folder
             );
 
+        const normalizedOptions =
+            normalizeOptions(printOptions);
+
+        const processedPdfPath =
+            normalizedOptions.color === "Gray"
+                ? await convertPdfToBlackAndWhite(pdfPath)
+                : pdfPath;
+
 
         /*
         |--------------------------------------------------------------------------
@@ -413,7 +422,7 @@ async function downloadFile(file, acknowledge = false) {
         */
 
         let finalFilename =
-            path.basename(pdfPath);
+            path.basename(processedPdfPath);
 
 
         /*
@@ -447,7 +456,7 @@ async function downloadFile(file, acknowledge = false) {
         */
 
         fs.copyFileSync(
-            pdfPath,
+            processedPdfPath,
             finalPath
         );
 
@@ -477,6 +486,13 @@ async function downloadFile(file, acknowledge = false) {
 
             fs.unlinkSync(
                 pdfPath
+            );
+        }
+
+        if (processedPdfPath !== pdfPath && fs.existsSync(processedPdfPath)) {
+
+            fs.unlinkSync(
+                processedPdfPath
             );
         }
 
@@ -697,6 +713,67 @@ async function ensurePdf(
     return await libreOfficeToPdf(
         inputPath
     );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Convert PDF to black and white
+|--------------------------------------------------------------------------
+*/
+
+async function convertPdfToBlackAndWhite(
+    inputPath
+) {
+
+    const executable =
+        process.platform === "win32"
+            ? "gswin64c"
+            : "gs";
+
+    const outputPath =
+        path.join(
+            TEMP_DIR,
+            `bw-${Date.now()}-${path.basename(inputPath)}`
+        );
+
+    try {
+
+        await execFileAsync(
+            executable,
+            [
+                "-dSAFER",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-sDEVICE=pdfwrite",
+                "-sColorConversionStrategy=Gray",
+                "-dProcessColorModel=/DeviceGray",
+                `-sOutputFile=${outputPath}`,
+                inputPath
+            ],
+            {
+                timeout: 120000
+            }
+        );
+
+        if (!fs.existsSync(outputPath)) {
+            throw new Error("Ghostscript failed to create a black-and-white PDF");
+        }
+
+        return outputPath;
+    } catch (error) {
+
+        if (fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath);
+        }
+
+        if (error.code === "ENOENT") {
+            throw new Error(
+                `Black-and-white PDF conversion requires Ghostscript (${executable} must be installed and available in PATH)`
+            );
+        }
+
+        throw error;
+    }
 }
 
 /*
@@ -1111,7 +1188,7 @@ async function processQueue() {
                         `/api/files/download-by-original/` +
                         `${encodeURIComponent(folder)}/` +
                         `${encodeURIComponent(job.originalName)}`
-                });
+                }, false, job.options || {});
 
                 await updateJobStatus(
                     job._id,
