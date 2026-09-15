@@ -1404,7 +1404,7 @@ async function monitorCupsJob(
             "completed"
         );
 
-        await markOrderStatus(job, "READY");
+        await markOrderStatus(job, "COMPLETED");
 
         await acknowledgePrintedFile(job);
 
@@ -1476,7 +1476,7 @@ async function monitorCupsJob(
                 "completed"
             );
 
-            await markOrderStatus(job, "READY");
+            await markOrderStatus(job, "COMPLETED");
 
             await acknowledgePrintedFile(job);
 
