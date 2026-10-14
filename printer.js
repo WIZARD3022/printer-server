@@ -132,6 +132,7 @@ function normalizeOptions(options = {}) {
     const duplexValue = firstValue(
         options.duplexMode,
         options.duplex,
+        options.sides,
         "None"
     );
     const duplex = canonicalValue(
@@ -143,10 +144,16 @@ function normalizeOptions(options = {}) {
         CAPABILITIES.duplexModes,
         {
             none: "None",
-            duplex: "DuplexNoTumble",
-            false: "None",
+            simplex: "None",
+            "one-sided": "None",
             off: "None",
-            simplex: "None"
+            false: "None",
+            duplex: "DuplexNoTumble",
+            "two-sided": "DuplexNoTumble",
+            "long-edge": "DuplexNoTumble",
+            "two-sided-long-edge": "DuplexNoTumble",
+            "short-edge": "DuplexTumble",
+            "two-sided-short-edge": "DuplexTumble"
         }
     );
     const quality = canonicalValue(firstValue(options.cupsPrintQuality, options.quality, "Normal"), CAPABILITIES.qualities);
@@ -218,6 +225,8 @@ function buildPrintCommand(filePath, options = {}) {
         "-o", `ColorModel=${printOptions.color}`,
         "-o", `Duplex=${printOptions.duplex}`,
         "-o", `OutputBin=${printOptions.outputBin}`,
+        "-o", "outputorder=reverse",
+        "-o", "collate=true",
         ...(printOptions.pageSelection ? ["-P", printOptions.pageSelection] : []),
         filePath
     ];
